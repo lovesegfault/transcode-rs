@@ -128,6 +128,8 @@ async fn main() -> Result<()> {
     let pb_span = Arc::new(info_span!("transcode"));
     pb_span.pb_set_style(&ProgressStyle::default_bar());
     pb_span.pb_set_length(media_count as u64);
+    let pb_span_clone = pb_span.clone();
+    let _pb_span_entered = pb_span.enter();
 
     stream::iter(files.into_iter())
         .par_then_unordered(None, |p| async move {
@@ -229,7 +231,7 @@ async fn main() -> Result<()> {
                 }
             }
         })
-        .map(move |(original, transcode)| (pb_span.clone(), original, transcode))
+        .map(move |(original, transcode)| (pb_span_clone.clone(), original, transcode))
         .par_for_each(None, |(span, original, transcode)| async move {
             debug!(
                 original=%original.path.display(),
@@ -255,6 +257,7 @@ async fn main() -> Result<()> {
             span.pb_inc(1)
         })
         .await;
+    drop(_pb_span_entered);
     Ok(())
 }
 
