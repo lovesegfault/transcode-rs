@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use async_tempfile::TempFile;
+use bytesize::ByteSize;
 use clap::Parser;
 use futures::{prelude::*, StreamExt};
 use indicatif::{ProgressState, ProgressStyle};
@@ -196,17 +197,27 @@ async fn main() -> Result<()> {
                 .await
                 .context("read original metadata")?
                 .len();
+            let original_bs = ByteSize::b(original_sz);
             let transcoded_sz = transcode
                 .metadata()
                 .await
                 .context("read transcoded metadata")?
                 .len();
+            let transcoded_bs = ByteSize::b(transcoded_sz);
+
             let shrink_percentage = 100.0 - (100.0 * (transcoded_sz as f64 / original_sz as f64));
+
+            info!(
+                "Transcode size {} -> {} ({:.2}%)",
+                original_bs.to_string_as(true),
+                transcoded_bs.to_string_as(true),
+                shrink_percentage
+            );
+
             if shrink_percentage < TRANSCODE_THRESHOLD_PERCENT {
                 warn!("Ignoring transcode due to below-threshold gains of {shrink_percentage:.2}%");
                 return Ok(None);
             }
-            info!(path=%transcode.file_path().display(), "Shrunk by {shrink_percentage:.2}%");
             Ok(Some((original, transcode)))
         })
         .filter_map(|res| async move {
@@ -215,28 +226,35 @@ async fn main() -> Result<()> {
                 Err(e) => {
                     error!("{e:?}");
                     None
-                },
+                }
             }
         })
-        .map(move |(original, transcode)| {
-            (pb_span.clone(), original, transcode)
-        })
+        .map(move |(original, transcode)| (pb_span.clone(), original, transcode))
         .par_for_each(None, |(span, original, transcode)| async move {
-            info!(original=%original.path.display(), transcode=%transcode.file_path().display(), "Replacing original with transcode");
-            let final_path = original.path.with_file_name(transcode.file_path().file_name().expect("transcoded file always has a file name"));
+            debug!(
+                original=%original.path.display(),
+                transcode=%transcode.file_path().display(),
+                "replacing original with transcode"
+            );
+            let final_path = original.path.with_file_name(
+                transcode
+                    .file_path()
+                    .file_name()
+                    .expect("transcoded file always has a file name"),
+            );
             match tokio::fs::copy(&transcode.file_path(), &final_path).await {
                 Ok(_) => {
-                    info!("Successfully transcoded '{}'", final_path.display());
                     tokio::fs::remove_file(&original.path).await.ok();
-                },
+                }
                 Err(e) => {
                     error!("Failed to copy transcoded file: {e:?}");
                     return;
-                },
+                }
             }
 
             span.pb_inc(1)
-        }).await;
+        })
+        .await;
     Ok(())
 }
 
