@@ -182,7 +182,7 @@ impl MediaInfo {
         let path = path.as_ref();
 
         let mut mediainfo_cmd = Command::new(MEDIAINFO);
-        mediainfo_cmd.arg("--Output=Json");
+        mediainfo_cmd.arg("--Output=JSON");
         mediainfo_cmd.arg(&path);
 
         let output = mediainfo_cmd.output().await.context("run mediainfo")?;
