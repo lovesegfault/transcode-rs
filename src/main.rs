@@ -204,6 +204,7 @@ async fn main() -> Result<()> {
                 warn!("Ignoring transcode due to below-threshold gains of {shrink_percentage:.2}%");
                 return Ok(None);
             }
+            info!(path=%transcode.file_path().display(), "Shrunk by {shrink_percentage:.2}%");
             Ok(Some((original, transcode)))
         })
         .filter_map(|res| async move {
@@ -360,8 +361,8 @@ impl VideoFile {
         cmd.arg(&transcoded_path);
 
         let _lock = ENCODER_LOCK.lock();
-        info!("Transcoding");
 
+        debug!("starting ffmpeg transcode");
         let output = cmd.output().await.context("run ffmpeg transcode")?;
         if !output.status.success() {
             tokio::fs::remove_file(&transcoded_path).await.ok();
@@ -370,7 +371,8 @@ impl VideoFile {
                 &String::from_utf8_lossy(&output.stderr)
             );
         }
-        info!("Done");
+        debug!("finished");
+
         drop(_lock);
 
         Ok(transcoded_path)
