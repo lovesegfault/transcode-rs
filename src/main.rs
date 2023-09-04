@@ -3,6 +3,7 @@ use clap::Parser;
 use futures::stream::{self, StreamExt};
 use indicatif::ProgressStyle;
 use serde::Deserialize;
+use serde_aux::prelude::*;
 use std::path::{Path, PathBuf};
 use tokio::sync::{Mutex, OnceCell};
 use tokio::{process::Command, task::spawn_blocking};
@@ -208,26 +209,29 @@ impl MediaInfo {
 
     fn video_info(&self) -> Option<&VideoInfo> {
         self.0.iter().find_map(|md| match md {
-            TrackInfo::Container(_) => None,
+            TrackInfo::General(_) => None,
             TrackInfo::Video(vmd) => Some(vmd),
+            TrackInfo::Unknown => None,
         })
     }
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
+#[serde(tag = "@type")]
 enum TrackInfo {
-    Container(ContainerInfo),
+    General(ContainerInfo),
     Video(VideoInfo),
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 #[allow(dead_code)]
 struct ContainerInfo {
-    #[serde(rename = "@type")]
-    track_type: String,
+    #[serde(default, deserialize_with = "deserialize_number_from_string")]
     video_count: usize,
+    #[serde(default, deserialize_with = "deserialize_number_from_string")]
     audio_count: usize,
     file_extension: String,
     format: String,
@@ -237,12 +241,13 @@ struct ContainerInfo {
 #[serde(rename_all = "PascalCase")]
 #[allow(dead_code)]
 struct VideoInfo {
-    #[serde(rename = "@type")]
-    track_type: String,
     stream_order: String,
     format: String,
+    #[serde(rename = "CodecID")]
     codec_id: String,
+    #[serde(deserialize_with = "deserialize_number_from_string")]
     width: usize,
+    #[serde(deserialize_with = "deserialize_number_from_string")]
     height: usize,
     color_space: String,
 }
