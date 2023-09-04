@@ -31,7 +31,9 @@ struct Args {
 }
 
 fn elapsed_subsec(state: &ProgressState, writer: &mut dyn std::fmt::Write) {
-    let _ = writer.write_str(&humantime::format_duration(state.elapsed()).to_string());
+    // trim micro/nano secs
+    let elapsed = Duration::from_secs(state.elapsed().as_secs());
+    let _ = writer.write_str(&humantime::format_duration(elapsed).to_string());
 }
 
 #[tokio::main(flavor = "multi_thread")]
