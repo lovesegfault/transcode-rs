@@ -140,12 +140,12 @@ async fn main() -> Result<()> {
                 return None;
             };
 
-            if video_md.codec_id == "av01" {
+            if video_md.format == "AV1" {
                 info!(path=%p.display(), "Skipping AV1 file");
                 return None;
             }
 
-            if video_md.codec_id == "hvc1" {
+            if video_md.format == "HEVC" {
                 info!(path=%p.display(), "Skipping HEVC file");
                 return None;
             }
@@ -176,7 +176,7 @@ async fn main() -> Result<()> {
                 tokio::fs::remove_file(&transcoded.path).await.ok();
                 return;
             };
-            if transcoded_md.codec_id != "hvc1" {
+            if transcoded_md.format != "HEVC" {
                 error!(path = %transcoded.path.display(), "Transcoded file is not HEVC");
                 tokio::fs::remove_file(&transcoded.path).await.ok();
                 return;
