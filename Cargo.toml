@@ -9,6 +9,7 @@ edition = "2021"
 anyhow = "1.0.75"
 clap = { version = "4.4.2", features = ["derive", "env"] }
 futures = "0.3.28"
+humantime = "2.1.0"
 indicatif = { version = "0.17.6", features = ["tokio"] }
 par-stream = { version = "0.10.2", features = ["runtime-tokio"] }
 serde = { version = "1.0.188", features = ["derive"] }
