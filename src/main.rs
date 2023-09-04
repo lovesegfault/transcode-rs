@@ -4,7 +4,7 @@ use futures::stream::{self, StreamExt};
 use indicatif::ProgressStyle;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 use tokio::{process::Command, task::spawn_blocking};
 use tracing::{debug, error, info, info_span, warn, Span};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
@@ -16,9 +16,12 @@ const MEDIAINFO: &str = env!("MEDIAINFO_PATH");
 const FFMPEG: &str = env!("FFMPEG_PATH");
 
 static ENCODER_LOCK: Mutex<()> = Mutex::const_new(());
+static DRY_RUN: OnceCell<bool> = OnceCell::const_new();
 
 #[derive(Parser)]
 struct Args {
+    #[arg(long)]
+    dry_run: bool,
     media: Vec<PathBuf>,
 }
 
@@ -31,6 +34,8 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    DRY_RUN.get_or_init(|| async move { args.dry_run }).await;
 
     info!("Discovering files to transcode...");
     let walker = args
@@ -110,6 +115,10 @@ async fn main() -> Result<()> {
         })
         .buffer_unordered(200)
         .filter_map(|video| async move {
+            if DRY_RUN.get().copied().unwrap_or(true) {
+                debug!("Skipping due to dry-run");
+                return None;
+            }
             let transcoded = video
                 .transcode_hevc_vaapi("/tmp")
                 .await
@@ -278,6 +287,7 @@ impl VideoFile {
 
         let _lock = ENCODER_LOCK.lock();
         info!("Transcoding");
+
         let output = cmd.output().await.context("run ffmpeg transcode")?;
         if !output.status.success() {
             tokio::fs::remove_file(&transcoded_path).await.ok();
