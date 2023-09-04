@@ -7,10 +7,11 @@ use par_stream::prelude::*;
 use serde::Deserialize;
 use serde_aux::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, OnceCell};
 use tokio::{process::Command, task::spawn_blocking};
-use tracing::{debug, error, info, info_span, warn, Span};
+use tracing::{debug, error, info, info_span, warn};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -123,10 +124,9 @@ async fn main() -> Result<()> {
     let media_count = files.len();
     info!("Found {media_count} files to transcode");
 
-    let header_span = info_span!("transcode");
-    header_span.pb_set_style(&ProgressStyle::default_bar());
-    header_span.pb_set_length(media_count as u64);
-    let header_span_enter = header_span.enter();
+    let pb_span = Arc::new(info_span!("transcode"));
+    pb_span.pb_set_style(&ProgressStyle::default_bar());
+    pb_span.pb_set_length(media_count as u64);
 
     stream::iter(files.into_iter())
         .par_then_unordered(None, |p| async move {
@@ -218,25 +218,25 @@ async fn main() -> Result<()> {
                 },
             }
         })
-        .par_for_each(None, |(original, transcode)| async move {
-         info!(original=%original.path.display(), transcode=%transcode.file_path().display(), "Replacing original with transcode");
-         let final_path = original.path.with_file_name(transcode.file_path().file_name().expect("transcoded file always has a file name"));
-         match tokio::fs::copy(&transcode.file_path(), &final_path).await {
-             Ok(_) => {
-                 info!("Successfully transcoded '{}'", final_path.display());
-                 tokio::fs::remove_file(&original.path).await.ok();
-             },
-             Err(e) => {
-                 error!("Failed to copy transcoded file: {e:?}");
-                 return;
-             },
-         }
+        .map(move |(original, transcode)| {
+            (pb_span.clone(), original, transcode)
+        })
+        .par_for_each(None, |(span, original, transcode)| async move {
+            info!(original=%original.path.display(), transcode=%transcode.file_path().display(), "Replacing original with transcode");
+            let final_path = original.path.with_file_name(transcode.file_path().file_name().expect("transcoded file always has a file name"));
+            match tokio::fs::copy(&transcode.file_path(), &final_path).await {
+                Ok(_) => {
+                    info!("Successfully transcoded '{}'", final_path.display());
+                    tokio::fs::remove_file(&original.path).await.ok();
+                },
+                Err(e) => {
+                    error!("Failed to copy transcoded file: {e:?}");
+                    return;
+                },
+            }
 
-         Span::current().pb_inc(1);
+            span.pb_inc(1)
         }).await;
-
-    std::mem::drop(header_span_enter);
-    std::mem::drop(header_span);
     Ok(())
 }
 
