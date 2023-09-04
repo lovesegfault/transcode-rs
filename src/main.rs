@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     let files = spawn_blocking(move || {
         let mut files: Vec<PathBuf> = Vec::with_capacity(walker.size_hint().0);
         let video_exts = [
-            ".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpg", ".ts", ".webm", ".wmv",
+            "avi", "flv", "m4v", "mkv", "mov", "mp4", "mpg", "ts", "webm", "wmv",
         ];
         for entry in walker {
             let Ok(entry) = entry else {
