@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.75"
+async-tempfile = "0.4.0"
 clap = { version = "4.4.2", features = ["derive", "env"] }
 futures = "0.3.28"
 humantime = "2.1.0"

@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
+use async_tempfile::TempFile;
 use clap::Parser;
-use futures::prelude::*;
+use futures::{prelude::*, StreamExt};
 use indicatif::{ProgressState, ProgressStyle};
 use par_stream::prelude::*;
 use serde::Deserialize;
@@ -17,6 +18,7 @@ use walkdir::WalkDir;
 
 const MEDIAINFO: &str = env!("MEDIAINFO_PATH");
 const FFMPEG: &str = env!("FFMPEG_PATH");
+const TRANSCODE_THRESHOLD_PERCENT: f64 = 30.0;
 
 static ENCODER_LOCK: Mutex<()> = Mutex::const_new(());
 static DRY_RUN: OnceCell<bool> = OnceCell::const_new();
@@ -152,60 +154,83 @@ async fn main() -> Result<()> {
             Some(media)
         })
         .filter_map(|opt| async move { opt })
-        .filter_map(|video| async move {
+        .then(|video| async move {
             if DRY_RUN.get().copied().unwrap_or(true) {
                 debug!("Skipping due to dry-run");
-                return None;
+                return anyhow::Ok(None);
             }
-            let transcoded = video
-                .transcode_hevc_vaapi("/tmp")
-                .await
-                .map_err(|e| {
-                    error!(path=%video.path.display(), "Failed to transcode: {e:?}");
-                    e
-                })
-                .ok()?;
-            Some(futures::future::ready((video, transcoded)))
-        })
-        .buffer_unordered(200)
-        .for_each_concurrent(None, |(original, transcoded)| async move {
-            let Some(transcoded_md) = transcoded.metadata.video_info() else {
-                error!(path = %transcoded.path.display(), "Transcoded file has no video metadata");
-                tokio::fs::remove_file(&transcoded.path).await.ok();
-                return;
-            };
-            if transcoded_md.format != "HEVC" {
-                error!(path = %transcoded.path.display(), "Transcoded file is not HEVC");
-                tokio::fs::remove_file(&transcoded.path).await.ok();
-                return;
-            }
-            info!(original=%original.path.display(), transcode=%transcoded.path.display(), "Replacing original with transcode");
-            let final_path = original.path.with_file_name(transcoded.path.file_name().expect("transcoded file always has a file name"));
-            match tokio::fs::copy(&transcoded.path, &final_path).await {
-                Ok(_) => {
-                    tokio::fs::remove_file(&transcoded.path).await.ok();
-                },
-                Err(e) => {
-                    error!("Failed to copy transcoded file: {e:?}");
-                    tokio::fs::remove_file(&transcoded.path).await.ok();
-                },
-            }
+            let transcoded = video.transcode_hevc_vaapi("/tmp").await?;
+            let transcoded =
+                TempFile::from_existing(transcoded.clone(), async_tempfile::Ownership::Owned)
+                    .await
+                    .context("wrap transcoded in tempfile");
 
-            match VideoFile::new(&final_path).await {
-                Ok(final_video) => {
-                    info!("Successfully transcoded '{}'", final_video.path.display());
-                    tokio::fs::remove_file(&original.path).await.ok();
-                },
+            transcoded.map(|ts| Some((video, ts)))
+        })
+        .filter_map(|res| async move {
+            match res {
+                Ok(inner) => inner,
                 Err(e) => {
-                    error!("Final transcode metadata error: {e:?}");
-                    tokio::fs::remove_file(&final_path).await.ok();
+                    error!("{e:?}");
+                    None
                 }
             }
-
-            Span::current().pb_inc(1);
-
         })
-        .await;
+        .par_then_unordered(None, |(original, transcode)| async move {
+            let transcode_info = MediaInfo::new(transcode.file_path())
+                .await
+                .context("read transcode mediainfo")?;
+            let transcode_info = transcode_info
+                .video_info()
+                .context("transcode has no video track")?;
+            if transcode_info.format != "HEVC" {
+                anyhow::bail!(
+                    "Transcode was not HEVC: '{}'",
+                    transcode.file_path().display()
+                );
+            }
+
+            let original_sz = tokio::fs::metadata(&original.path)
+                .await
+                .context("read original metadata")?
+                .len();
+            let transcoded_sz = transcode
+                .metadata()
+                .await
+                .context("read transcoded metadata")?
+                .len();
+            let shrink_percentage = 100.0 - (100.0 * (transcoded_sz as f64 / original_sz as f64));
+            if shrink_percentage < TRANSCODE_THRESHOLD_PERCENT {
+                warn!("Ignoring transcode due to below-threshold gains of {shrink_percentage:.2}%");
+                return Ok(None);
+            }
+            Ok(Some((original, transcode)))
+        })
+        .filter_map(|res| async move {
+            match res {
+                Ok(inner) => inner,
+                Err(e) => {
+                    error!("{e:?}");
+                    None
+                },
+            }
+        })
+        .par_for_each(None, |(original, transcode)| async move {
+         info!(original=%original.path.display(), transcode=%transcode.file_path().display(), "Replacing original with transcode");
+         let final_path = original.path.with_file_name(transcode.file_path().file_name().expect("transcoded file always has a file name"));
+         match tokio::fs::copy(&transcode.file_path(), &final_path).await {
+             Ok(_) => {
+                 info!("Successfully transcoded '{}'", final_path.display());
+                 tokio::fs::remove_file(&original.path).await.ok();
+             },
+             Err(e) => {
+                 error!("Failed to copy transcoded file: {e:?}");
+                 return;
+             },
+         }
+
+         Span::current().pb_inc(1);
+        }).await;
 
     std::mem::drop(header_span_enter);
     std::mem::drop(header_span);
@@ -303,7 +328,7 @@ impl VideoFile {
     }
 
     #[tracing::instrument(skip_all, fields(path = %self.path.display()))]
-    pub async fn transcode_hevc_vaapi(&self, out_dir: impl AsRef<Path>) -> Result<Self> {
+    pub async fn transcode_hevc_vaapi(&self, out_dir: impl AsRef<Path>) -> Result<PathBuf> {
         let file_name = self
             .path
             .file_name()
@@ -348,10 +373,6 @@ impl VideoFile {
         info!("Done");
         drop(_lock);
 
-        let transcoded = Self::new(transcoded_path)
-            .await
-            .context("parse transcoded file")?;
-
-        Ok(transcoded)
+        Ok(transcoded_path)
     }
 }
