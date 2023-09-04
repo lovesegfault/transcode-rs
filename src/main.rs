@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use futures::stream::{self, StreamExt};
+use futures::prelude::*;
 use indicatif::ProgressStyle;
+use par_stream::prelude::*;
 use serde::Deserialize;
 use serde_aux::prelude::*;
 use std::path::{Path, PathBuf};
@@ -82,13 +83,13 @@ async fn main() -> Result<()> {
     let media_count = files.len();
     info!("Found {media_count} files to transcode");
 
-    let header_span = info_span!("header");
+    let header_span = info_span!("transcode");
     header_span.pb_set_style(&ProgressStyle::default_bar());
     header_span.pb_set_length(media_count as u64);
     let header_span_enter = header_span.enter();
 
     stream::iter(files.into_iter())
-        .filter_map(|p| async move {
+        .par_then_unordered(None, |p| async move {
             let media = VideoFile::new(&p)
                 .await
                 .map_err(|e| {
@@ -112,9 +113,9 @@ async fn main() -> Result<()> {
             }
 
             info!("Enqueued '{}'", p.display());
-            Some(futures::future::ready(media))
+            Some(media)
         })
-        .buffer_unordered(200)
+        .filter_map(|opt| async move { opt })
         .filter_map(|video| async move {
             if DRY_RUN.get().copied().unwrap_or(true) {
                 debug!("Skipping due to dry-run");
