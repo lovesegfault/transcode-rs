@@ -50,10 +50,10 @@ async fn main() -> Result<()> {
             |state: &ProgressState, writer: &mut dyn std::fmt::Write| {
                 let elapsed = state.elapsed();
 
-                if elapsed > Duration::from_secs(8) {
+                if elapsed > Duration::from_secs(30 * 60) {
                     // Red
                     let _ = write!(writer, "\x1b[{}m", 1 + 30);
-                } else if elapsed > Duration::from_secs(4) {
+                } else if elapsed > Duration::from_secs(15 * 60) {
                     // Yellow
                     let _ = write!(writer, "\x1b[{}m", 3 + 30);
                 }
