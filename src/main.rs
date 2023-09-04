@@ -194,8 +194,15 @@ impl MediaInfo {
             );
         }
 
-        let metadata: MediaInfo =
+        let json: serde_json::Value =
             serde_json::from_slice(&output.stdout).context("parse mediainfo")?;
+        let tracks = json
+            .get("media")
+            .and_then(|m| m.get("track"))
+            .cloned()
+            .context("get track info from mediainfo")?;
+        let metadata: MediaInfo = serde_json::from_value(tracks).context("parse track info")?;
+
         Ok(metadata)
     }
 
