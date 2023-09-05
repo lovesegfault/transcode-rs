@@ -13,7 +13,6 @@ use std::time::Duration;
 use tokio::sync::{Mutex, OnceCell};
 use tokio::task::JoinSet;
 use tokio::{process::Command, task::spawn_blocking};
-use tokio_util::sync::ReusableBoxFuture;
 use tracing::{debug, error, info, info_span, warn, Instrument};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
 use tracing_subscriber::layer::SubscriberExt;
@@ -159,14 +158,8 @@ async fn main() -> Result<()> {
 
     tasks.spawn(async move {
         PriorityReceiverStream::new(recv)
-            .filter_map(|res| async move {
-                match res {
-                    Ok(((span, video), _prio)) => Some((span, video)),
-                    Err(e) => {
-                        error!("{e:?}");
-                        None
-                    }
-                }
+            .map(|(inner, _prio)| {
+                inner
             })
             .then(|(span, video)| async move {
                 if DRY_RUN.get().copied().unwrap_or(true) {
@@ -301,14 +294,27 @@ impl<I, P: Ord> PriorityReceiverStream<I, P> {
     }
 }
 
+// I think this sucks?
 impl<I: Send, P: Ord + Send> Stream for PriorityReceiverStream<I, P> {
-    type Item = Result<(I, P), async_priority_channel::RecvError>;
+    type Item = (I, P);
     fn poll_next(
         self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let mut boxed = ReusableBoxFuture::new(self.0.recv().map(Some));
-        boxed.poll(cx)
+        loop {
+            // Attempt to receive a message.
+            match self.0.try_recv() {
+                Ok(msg) => {
+                    // The stream is not blocked on an event - drop the listener.
+                    return std::task::Poll::Ready(Some(msg));
+                }
+                Err(async_priority_channel::TryRecvError::Closed) => {
+                    // The stream is not blocked on an event - drop the listener.
+                    return std::task::Poll::Ready(None);
+                }
+                Err(async_priority_channel::TryRecvError::Empty) => {}
+            }
+        }
     }
 }
 
