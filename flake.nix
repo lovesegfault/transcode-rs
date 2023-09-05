@@ -69,14 +69,14 @@
           ]);
 
           propagatedBuildInputs = [
-            ffmpeg_6
+            ffmpeg_6-full
             mediainfo
           ];
 
           CARGO_BUILD_TARGET = rustTarget;
           "CARGO_TARGET_${rustTargetEnv}_LINKER" = "${stdenv.cc.targetPrefix}cc";
           MEDIAINFO_PATH = "${mediainfo}/bin/mediainfo";
-          FFMPEG_PATH = "${ffmpeg_6}/bin/ffmpeg";
+          FFMPEG_PATH = "${ffmpeg_6-full}/bin/ffmpeg";
 
         } // (lib.optionalAttrs (stdenv.buildPlatform != stdenv.hostPlatform) {
           depsBuildBuild = [ qemu ];
@@ -87,7 +87,7 @@
           { stdenv
           , lib
           , pkg-config
-          , ffmpeg_6
+          , ffmpeg_6-full
           , mediainfo
           , libiconv
           , qemu
