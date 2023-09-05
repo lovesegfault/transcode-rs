@@ -131,7 +131,8 @@ async fn main() -> Result<()> {
     let _pb_span_entered = pb_span.enter();
 
     stream::iter(files.into_iter())
-        .par_then_unordered(None, |p| async move {
+        .map(move |path| (pb_span_clone.clone(), path))
+        .par_then_unordered(None, |(span, p)| async move {
             let media = VideoFile::new(&p)
                 .await
                 .map_err(|e| {
@@ -146,19 +147,20 @@ async fn main() -> Result<()> {
 
             if video_md.format == "AV1" {
                 info!(path=%p.display(), "Skipping AV1 file");
+                span.pb_inc(1);
                 return None;
             }
 
             if video_md.format == "HEVC" {
                 info!(path=%p.display(), "Skipping HEVC file");
+                span.pb_inc(1);
                 return None;
             }
 
             info!("Enqueued '{}'", p.display());
-            Some(media)
+            Some((span, media))
         })
         .filter_map(|opt| async move { opt })
-        .map(move |video| (pb_span_clone.clone(), video))
         .then(|(span, video)| async move {
             if DRY_RUN.get().copied().unwrap_or(true) {
                 debug!("Skipping due to dry-run");
@@ -222,6 +224,7 @@ async fn main() -> Result<()> {
 
             if shrink_percentage < TRANSCODE_THRESHOLD_PERCENT {
                 warn!("Ignoring transcode due to below-threshold gains of {shrink_percentage:.2}%");
+                span.pb_inc(1);
                 return Ok(None);
             }
             Ok(Some((span, original, transcode)))
