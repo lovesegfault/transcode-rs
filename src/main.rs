@@ -552,20 +552,23 @@ impl VideoFile {
 
         cmd.arg(&transcoded_path);
 
-        let task = tokio::spawn(async move {
-            let _lock = ENCODER_LOCK.lock();
-            debug!("starting ffmpeg transcode");
-            let output = cmd.output().await.context("run ffmpeg transcode")?;
-            if !output.status.success() {
-                anyhow::bail!(
-                    "transcode failed: {}",
-                    &String::from_utf8_lossy(&output.stderr)
-                );
+        let task = tokio::spawn(
+            async move {
+                let _lock = ENCODER_LOCK.lock();
+                debug!("starting ffmpeg transcode");
+                let output = cmd.output().await.context("run ffmpeg transcode")?;
+                if !output.status.success() {
+                    anyhow::bail!(
+                        "transcode failed: {}",
+                        &String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                debug!("finished");
+                drop(_lock);
+                Ok(())
             }
-            debug!("finished");
-            drop(_lock);
-            Ok(())
-        });
+            .instrument(Span::current()),
+        );
 
         (transcoded_path, task)
     }
