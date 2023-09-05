@@ -329,13 +329,10 @@ struct ContainerInfo {
 struct VideoInfo {
     stream_order: String,
     format: String,
-    #[serde(rename = "CodecID")]
-    codec_id: String,
     #[serde(deserialize_with = "deserialize_number_from_string")]
     width: usize,
     #[serde(deserialize_with = "deserialize_number_from_string")]
     height: usize,
-    color_space: String,
 }
 
 struct VideoFile {
