@@ -190,12 +190,17 @@ async fn main() -> Result<()> {
                     if transcoded_size > original_size {
                         warn!(path=%video.path.display(), "Aborting transcode due to size increase");
                         transcode_task.abort();
+                        tokio::fs::remove_file(&transcoded_path).await?;
                         return Ok(None);
                     }
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
 
-                transcode_task.await.context("transcode task")??;
+                if let Err(e) = transcode_task.await.context("transcode task")? {
+                    tokio::fs::remove_file(&transcoded_path).await?;
+                    return Err(e);
+                };
+
                 let transcoded =
                     TempFile::from_existing(transcoded_path, async_tempfile::Ownership::Owned)
                         .await
