@@ -213,6 +213,7 @@ async fn main() -> Result<()> {
             let shrink_percentage = 100.0 - (100.0 * (transcoded_sz as f64 / original_sz as f64));
 
             info!(
+                path = %original.path.display(),
                 "Transcode size {} -> {} ({:.2}%)",
                 original_bs.to_string_as(true),
                 transcoded_bs.to_string_as(true),
