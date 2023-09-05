@@ -8,11 +8,10 @@ use par_stream::prelude::*;
 use serde::Deserialize;
 use serde_aux::prelude::*;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, OnceCell};
 use tokio::{process::Command, task::spawn_blocking};
-use tracing::{debug, error, info, info_span, warn};
+use tracing::{debug, error, info, info_span, warn, Instrument};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -125,7 +124,7 @@ async fn main() -> Result<()> {
     let media_count = files.len();
     info!("Found {media_count} files to transcode");
 
-    let pb_span = Arc::new(info_span!("transcode"));
+    let pb_span = info_span!("transcode");
     pb_span.pb_set_style(&ProgressStyle::default_bar());
     pb_span.pb_set_length(media_count as u64);
     let pb_span_clone = pb_span.clone();
@@ -159,18 +158,22 @@ async fn main() -> Result<()> {
             Some(media)
         })
         .filter_map(|opt| async move { opt })
-        .then(|video| async move {
+        .map(move |video| (pb_span_clone.clone(), video))
+        .then(|(span, video)| async move {
             if DRY_RUN.get().copied().unwrap_or(true) {
                 debug!("Skipping due to dry-run");
                 return anyhow::Ok(None);
             }
-            let transcoded = video.transcode_hevc_vaapi("/tmp").await?;
+            let transcoded = video
+                .transcode_hevc_vaapi("/tmp")
+                .instrument(span.clone())
+                .await?;
             let transcoded =
                 TempFile::from_existing(transcoded.clone(), async_tempfile::Ownership::Owned)
                     .await
                     .context("wrap transcoded in tempfile");
 
-            transcoded.map(|ts| Some((video, ts)))
+            transcoded.map(|ts| Some((span, video, ts)))
         })
         .filter_map(|res| async move {
             match res {
@@ -181,7 +184,7 @@ async fn main() -> Result<()> {
                 }
             }
         })
-        .par_then_unordered(None, |(original, transcode)| async move {
+        .par_then_unordered(None, |(span, original, transcode)| async move {
             let transcode_info = MediaInfo::new(transcode.file_path())
                 .await
                 .context("read transcode mediainfo")?;
@@ -220,7 +223,7 @@ async fn main() -> Result<()> {
                 warn!("Ignoring transcode due to below-threshold gains of {shrink_percentage:.2}%");
                 return Ok(None);
             }
-            Ok(Some((original, transcode)))
+            Ok(Some((span, original, transcode)))
         })
         .filter_map(|res| async move {
             match res {
@@ -231,7 +234,6 @@ async fn main() -> Result<()> {
                 }
             }
         })
-        .map(move |(original, transcode)| (pb_span_clone.clone(), original, transcode))
         .par_for_each(None, |(span, original, transcode)| async move {
             debug!(
                 original=%original.path.display(),
