@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::{Mutex, OnceCell};
-use tokio::task::JoinSet;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::{process::Command, task::spawn_blocking};
-use tracing::{debug, error, info, info_span, warn, Instrument};
+use tracing::{debug, error, info, info_span, warn, Instrument, Span};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -166,18 +166,44 @@ async fn main() -> Result<()> {
                     debug!("Skipping due to dry-run");
                     return anyhow::Ok(None);
                 }
-                let transcoded = video
-                    .transcode_hevc_vaapi("/tmp")
-                    .instrument(span.clone())
-                    .await?;
+                let original_size = tokio::fs::metadata(&video.path).await.context("read original metadata")?.len();
+
+                let (transcoded_path, transcode_task) = video.transcode_hevc_vaapi("/tmp").instrument(span.clone()).await;
+
+                // wait for file to show up initially
+                while !transcoded_path.exists() {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                // at this point, we can be sure the transcode has started
+                while !transcode_task.is_finished() {
+                    // this means the transcode task has already finished?
+                    if !transcoded_path.exists() {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    // check the size of the transcoded file
+                    let Ok(transcoded_size) = tokio::fs::metadata(&transcoded_path).await.map(|md| md.len()) else {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    };
+                    // the transcode is pointless
+                    if transcoded_size > original_size {
+                        warn!(path=%video.path.display(), "Aborting transcode due to size increase");
+                        transcode_task.abort();
+                        return Ok(None);
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+
+                transcode_task.await.context("transcode task")??;
                 let transcoded =
-                    TempFile::from_existing(transcoded.clone(), async_tempfile::Ownership::Owned)
+                    TempFile::from_existing(transcoded_path, async_tempfile::Ownership::Owned)
                         .await
                         .context("wrap transcoded in tempfile");
 
                 transcoded.map(|ts| Some((span, video, ts)))
             })
-            .filter_map(|res| async move {
+            .filter_map(|res: Result<Option<(Span, VideoFile, TempFile)>>| async move {
                 match res {
                     Ok(inner) => inner,
                     Err(e) => {
@@ -496,11 +522,11 @@ impl VideoFile {
     }
 
     #[tracing::instrument(skip_all, fields(path = %self.path.display()))]
-    pub async fn transcode_hevc_vaapi(&self, out_dir: impl AsRef<Path>) -> Result<PathBuf> {
-        let file_name = self
-            .path
-            .file_name()
-            .context("video file has no file name")?;
+    pub async fn transcode_hevc_vaapi(
+        &self,
+        out_dir: impl AsRef<Path>,
+    ) -> (PathBuf, JoinHandle<Result<()>>) {
+        let file_name = self.path.file_name().expect("video file has no file name");
         let transcoded_path = out_dir.as_ref().join(file_name).with_extension("mkv");
 
         let mut cmd = Command::new(FFMPEG);
@@ -527,21 +553,21 @@ impl VideoFile {
 
         cmd.arg(&transcoded_path);
 
-        let _lock = ENCODER_LOCK.lock();
+        let task = tokio::spawn(async move {
+            let _lock = ENCODER_LOCK.lock();
+            debug!("starting ffmpeg transcode");
+            let output = cmd.output().await.context("run ffmpeg transcode")?;
+            if !output.status.success() {
+                anyhow::bail!(
+                    "transcode failed: {}",
+                    &String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            debug!("finished");
+            drop(_lock);
+            Ok(())
+        });
 
-        debug!("starting ffmpeg transcode");
-        let output = cmd.output().await.context("run ffmpeg transcode")?;
-        if !output.status.success() {
-            tokio::fs::remove_file(&transcoded_path).await.ok();
-            anyhow::bail!(
-                "transcode failed: {}",
-                &String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        debug!("finished");
-
-        drop(_lock);
-
-        Ok(transcoded_path)
+        (transcoded_path, task)
     }
 }
