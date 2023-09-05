@@ -12,6 +12,7 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::{Mutex, OnceCell};
 use tokio::{process::Command, task::spawn_blocking};
+use tokio_util::sync::ReusableBoxFuture;
 use tracing::{debug, error, info, info_span, warn, Instrument};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
 use tracing_subscriber::layer::SubscriberExt;
@@ -87,192 +88,225 @@ async fn main() -> Result<()> {
     let pb_span_clone = pb_span.clone();
     let _pb_span_entered = pb_span.enter();
 
-    BlockingStream::new(
-        args.media
-            .into_iter()
-            .map(|p| WalkDir::new(p).into_iter())
-            .flatten(),
-    )
-    .map(move |entry| (pb_span_clone.clone(), entry))
-    .par_then_unordered(None, |(span, entry)| async move {
-        let Ok(entry) = entry else {
-            warn!("skipping entry: {entry:?}");
-            return None;
-        };
-        let path = entry.path();
-        if entry.path_is_symlink() {
-            debug!("skipping symlink: '{}'", path.display());
-            return None;
-        }
-        if path.is_dir() {
-            debug!("skipping directory: '{}'", path.display());
-            return None;
-        }
-        let Some(ext) = path.extension() else {
-            debug!("skipping extensionless path: '{}'", path.display());
-            return None;
-        };
-        let video_exts = [
-            "avi", "flv", "m4v", "mkv", "mov", "mp4", "mpg", "ts", "webm", "wmv",
-        ];
-        if !video_exts.iter().any(|&e| e == ext) {
-            debug!(ext=%ext.to_string_lossy(), "skipping non-video file '{}'", path.display());
-            return None;
-        }
+    let (send, recv) = async_priority_channel::unbounded();
 
-        let media = VideoFile::new(&path)
-            .await
-            .map_err(|e| {
-                error!(path=%path.display(), "failed to parse video metadata: {e:?}");
-                e
-            })
-            .ok()?;
-        let Some(video_md) = media.metadata.video_info() else {
-            warn!("No video metadata in video file");
-            return None;
-        };
-
-        if video_md.format == "AV1" {
-            info!(path=%path.display(), "Skipping AV1 file");
-            span.pb_inc(1);
-            return None;
-        }
-
-        if video_md.format == "HEVC" {
-            info!(path=%path.display(), "Skipping HEVC file");
-            span.pb_inc(1);
-            return None;
-        }
-
-        info!("Enqueued '{}'", path.display());
-        span.pb_inc_length(1);
-        Some((span, media))
-    })
-    .filter_map(|opt| async move { opt.map(future::ready) })
-    .buffer_unordered(20000)
-    .then(|(span, video)| async move {
-        if DRY_RUN.get().copied().unwrap_or(true) {
-            debug!("Skipping due to dry-run");
-            return anyhow::Ok(None);
-        }
-        let transcoded = video
-            .transcode_hevc_vaapi("/tmp")
-            .instrument(span.clone())
-            .await?;
-        let transcoded =
-            TempFile::from_existing(transcoded.clone(), async_tempfile::Ownership::Owned)
-                .await
-                .context("wrap transcoded in tempfile");
-
-        transcoded.map(|ts| Some((span, video, ts)))
-    })
-    .filter_map(|res| async move {
-        match res {
-            Ok(inner) => inner,
-            Err(e) => {
-                error!("{e:?}");
-                None
-            }
-        }
-    })
-    .par_then_unordered(None, |(span, original, transcode)| async move {
-        let transcode_info = MediaInfo::new(transcode.file_path())
-            .await
-            .context("read transcode mediainfo")?;
-        let transcode_info = transcode_info
-            .video_info()
-            .context("transcode has no video track")?;
-        if transcode_info.format != "HEVC" {
-            anyhow::bail!(
-                "Transcode was not HEVC: '{}'",
-                transcode.file_path().display()
-            );
-        }
-
-        let original_info = original
-            .metadata
-            .video_info()
-            .context("original has no video track")?;
-        let duration_diff = 100.0 - (100.0 * (transcode_info.duration / original_info.duration));
-        if duration_diff > 5.0 {
-            warn!(
-                original =
-                    humantime::format_duration(Duration::from_secs_f64(original_info.duration))
-                        .to_string(),
-                transcode =
-                    humantime::format_duration(Duration::from_secs_f64(transcode_info.duration))
-                        .to_string(),
-                "Ignoring transcode due to duration difference of {duration_diff:.2}%"
-            );
-            span.pb_inc(1);
-            return Ok(None);
-        }
-
-        let original_sz = tokio::fs::metadata(&original.path)
-            .await
-            .context("read original metadata")?
-            .len();
-        let original_bs = ByteSize::b(original_sz);
-        let transcoded_sz = transcode
-            .metadata()
-            .await
-            .context("read transcoded metadata")?
-            .len();
-        let transcoded_bs = ByteSize::b(transcoded_sz);
-
-        let shrink_percentage = 100.0 - (100.0 * (transcoded_sz as f64 / original_sz as f64));
-
-        info!(
-            path = %original.path.display(),
-            "Transcode size {} -> {} ({:.2}%)",
-            original_bs.to_string_as(true),
-            transcoded_bs.to_string_as(true),
-            shrink_percentage
-        );
-
-        if shrink_percentage < TRANSCODE_THRESHOLD_PERCENT {
-            warn!("Ignoring transcode due to below-threshold gains of {shrink_percentage:.2}%");
-            span.pb_inc(1);
-            return Ok(None);
-        }
-        Ok(Some((span, original, transcode)))
-    })
-    .filter_map(|res| async move {
-        match res {
-            Ok(inner) => inner,
-            Err(e) => {
-                error!("{e:?}");
-                None
-            }
-        }
-    })
-    .par_for_each(None, |(span, original, transcode)| async move {
-        debug!(
-            original=%original.path.display(),
-            transcode=%transcode.file_path().display(),
-            "replacing original with transcode"
-        );
-        let final_path = original.path.with_file_name(
-            transcode
-                .file_path()
-                .file_name()
-                .expect("transcoded file always has a file name"),
-        );
-        match tokio::fs::copy(&transcode.file_path(), &final_path).await {
-            Ok(_) => {
-                tokio::fs::remove_file(&original.path).await.ok();
-            }
-            Err(e) => {
-                error!("Failed to copy transcoded file: {e:?}");
+    let file_finder = tokio::spawn(async move {
+        BlockingStream::new(
+            args.media
+                .into_iter()
+                .map(|p| WalkDir::new(p).into_iter())
+                .flatten(),
+        )
+        .map(move |entry| (send.clone(), pb_span_clone.clone(), entry))
+        .for_each_concurrent(None, |(send, span, entry)| async move {
+            let Ok(entry) = entry else {
+                warn!("skipping entry: {entry:?}");
+                return;
+            };
+            let path = entry.path();
+            if entry.path_is_symlink() {
+                debug!("skipping symlink: '{}'", path.display());
                 return;
             }
-        }
+            if path.is_dir() {
+                debug!("skipping directory: '{}'", path.display());
+                return;
+            }
+            let Some(ext) = path.extension() else {
+                debug!("skipping extensionless path: '{}'", path.display());
+                return;
+            };
+            let video_exts = [
+                "avi", "flv", "m4v", "mkv", "mov", "mp4", "mpg", "ts", "webm", "wmv",
+            ];
+            if !video_exts.iter().any(|&e| e == ext) {
+                debug!(ext=%ext.to_string_lossy(), "skipping non-video file '{}'", path.display());
+                return;
+            }
 
-        span.pb_inc(1)
-    })
-    .await;
+            let Ok(media) = VideoFile::new(&path).await.map_err(|e| {
+                error!(path=%path.display(), "failed to parse video metadata: {e:?}");
+                e
+            }) else {
+                return;
+            };
+            let Some(video_md) = media.metadata.video_info() else {
+                warn!("No video metadata in video file");
+                return;
+            };
+
+            if video_md.format == "AV1" {
+                info!(path=%path.display(), "Skipping AV1 file");
+                span.pb_inc(1);
+                return;
+            }
+
+            if video_md.format == "HEVC" {
+                info!(path=%path.display(), "Skipping HEVC file");
+                span.pb_inc(1);
+                return;
+            }
+
+            info!("Enqueued '{}'", path.display());
+            span.pb_inc_length(1);
+            let prio = media.metadata.file_size().unwrap_or_default();
+            send.send((span, media), prio).await.unwrap();
+        })
+        .await;
+    });
+
+    let transcoder = tokio::spawn(async move {
+        PriorityReceiverStream::new(recv)
+            .filter_map(|res| async move {
+                match res {
+                    Ok(((span, video), _prio)) => Some((span, video)),
+                    Err(e) => {
+                        error!("{e:?}");
+                        None
+                    }
+                }
+            })
+            .then(|(span, video)| async move {
+                if DRY_RUN.get().copied().unwrap_or(true) {
+                    debug!("Skipping due to dry-run");
+                    return anyhow::Ok(None);
+                }
+                let transcoded = video
+                    .transcode_hevc_vaapi("/tmp")
+                    .instrument(span.clone())
+                    .await?;
+                let transcoded =
+                    TempFile::from_existing(transcoded.clone(), async_tempfile::Ownership::Owned)
+                        .await
+                        .context("wrap transcoded in tempfile");
+
+                transcoded.map(|ts| Some((span, video, ts)))
+            })
+            .filter_map(|res| async move {
+                match res {
+                    Ok(inner) => inner,
+                    Err(e) => {
+                        error!("{e:?}");
+                        None
+                    }
+                }
+            })
+            .par_then_unordered(None, |(span, original, transcode)| async move {
+                let transcode_info = MediaInfo::new(transcode.file_path())
+                    .await
+                    .context("read transcode mediainfo")?;
+                let transcode_info = transcode_info
+                    .video_info()
+                    .context("transcode has no video track")?;
+                if transcode_info.format != "HEVC" {
+                    anyhow::bail!(
+                        "Transcode was not HEVC: '{}'",
+                        transcode.file_path().display()
+                    );
+                }
+                let original_info = original
+                    .metadata
+                    .video_info()
+                    .context("original has no video track")?;
+                let duration_diff = 100.0 - (100.0 * (transcode_info.duration / original_info.duration));
+                if duration_diff > 5.0 {
+                    warn!(
+                        original =
+                            humantime::format_duration(Duration::from_secs_f64(original_info.duration))
+                                .to_string(),
+                        transcode =
+                            humantime::format_duration(Duration::from_secs_f64(transcode_info.duration))
+                                .to_string(),
+                        "Ignoring transcode due to duration difference of {duration_diff:.2}%"
+                    );
+                    span.pb_inc(1);
+                    return Ok(None);
+                }
+                let original_sz = tokio::fs::metadata(&original.path)
+                    .await
+                    .context("read original metadata")?
+                    .len();
+                let original_bs = ByteSize::b(original_sz);
+                let transcoded_sz = transcode
+                    .metadata()
+                    .await
+                    .context("read transcoded metadata")?
+                    .len();
+                let transcoded_bs = ByteSize::b(transcoded_sz);
+                let shrink_percentage = 100.0 - (100.0 * (transcoded_sz as f64 / original_sz as f64));
+                info!(
+                    path = %original.path.display(),
+                    "Transcode size {} -> {} ({:.2}%)",
+                    original_bs.to_string_as(true),
+                    transcoded_bs.to_string_as(true),
+                    shrink_percentage
+                );
+                if shrink_percentage < TRANSCODE_THRESHOLD_PERCENT {
+                    warn!("Ignoring transcode due to below-threshold gains of {shrink_percentage:.2}%");
+                    span.pb_inc(1);
+                    return Ok(None);
+                }
+                Ok(Some((span, original, transcode)))
+            })
+            .filter_map(|res| async move {
+                match res {
+                    Ok(inner) => inner,
+                    Err(e) => {
+                        error!("{e:?}");
+                        None
+                    }
+                }
+            })
+            .par_for_each(None, |(span, original, transcode)| async move {
+                debug!(
+                    original=%original.path.display(),
+                    transcode=%transcode.file_path().display(),
+                    "replacing original with transcode"
+                );
+                let final_path = original.path.with_file_name(
+                    transcode
+                        .file_path()
+                        .file_name()
+                        .expect("transcoded file always has a file name"),
+                );
+                match tokio::fs::copy(&transcode.file_path(), &final_path).await {
+                    Ok(_) => {
+                        tokio::fs::remove_file(&original.path).await.ok();
+                    }
+                    Err(e) => {
+                        error!("Failed to copy transcoded file: {e:?}");
+                        return;
+                    }
+                }
+                span.pb_inc(1)
+            })
+            .await;
+    });
+
+    file_finder.await?;
+    transcoder.await?;
+
     drop(_pb_span_entered);
     Ok(())
+}
+
+struct PriorityReceiverStream<I, P: Ord>(async_priority_channel::Receiver<I, P>);
+
+impl<I, P: Ord> PriorityReceiverStream<I, P> {
+    fn new(recv: async_priority_channel::Receiver<I, P>) -> Self {
+        Self(recv)
+    }
+}
+
+impl<I: Send, P: Ord + Send> Stream for PriorityReceiverStream<I, P> {
+    type Item = Result<(I, P), async_priority_channel::RecvError>;
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let mut boxed = ReusableBoxFuture::new(self.0.recv().map(Some));
+        boxed.poll(cx)
+    }
 }
 
 struct BlockingStream<N, I>(BlockingState<N, I>);
@@ -369,6 +403,10 @@ impl MediaInfo {
             TrackInfo::Video(_) => None,
             TrackInfo::Unknown => None,
         })
+    }
+
+    fn file_size(&self) -> Option<usize> {
+        self.general_info().map(|info| info.file_size)
     }
 }
 
