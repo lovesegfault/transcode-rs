@@ -21,7 +21,7 @@ use walkdir::WalkDir;
 
 const MEDIAINFO: &str = env!("MEDIAINFO_PATH");
 const FFMPEG: &str = env!("FFMPEG_PATH");
-const TRANSCODE_THRESHOLD_PERCENT: f64 = 30.0;
+const TRANSCODE_THRESHOLD: f64 = 0.7;
 
 static ENCODER_LOCK: Mutex<()> = Mutex::const_new(());
 static DRY_RUN: OnceCell<bool> = OnceCell::const_new();
@@ -158,17 +158,22 @@ async fn main() -> Result<()> {
 
     tasks.spawn(async move {
         PriorityReceiverStream::new(recv)
-            .map(|(inner, _prio)| {
-                inner
-            })
+            .map(|(inner, _prio)| inner)
             .then(|(span, video)| async move {
                 if DRY_RUN.get().copied().unwrap_or(true) {
                     debug!("Skipping due to dry-run");
                     return anyhow::Ok(None);
                 }
-                let original_size = tokio::fs::metadata(&video.path).await.context("read original metadata")?.len();
+                let original_size = tokio::fs::metadata(&video.path)
+                    .await
+                    .context("read original metadata")?
+                    .len();
+                let transcode_threshold = (original_size as f64) * TRANSCODE_THRESHOLD;
 
-                let (transcoded_path, transcode_task) = video.transcode_hevc_vaapi("/tmp").instrument(span.clone()).await;
+                let (transcoded_path, transcode_task) = video
+                    .transcode_hevc_vaapi("/tmp")
+                    .instrument(span.clone())
+                    .await;
 
                 // wait for file to show up initially
                 while !transcoded_path.exists() {
@@ -182,13 +187,21 @@ async fn main() -> Result<()> {
                         continue;
                     }
                     // check the size of the transcoded file
-                    let Ok(transcoded_size) = tokio::fs::metadata(&transcoded_path).await.map(|md| md.len()) else {
+                    let Ok(transcoded_size) = tokio::fs::metadata(&transcoded_path)
+                        .await
+                        .map(|md| md.len())
+                    else {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         continue;
                     };
                     // the transcode is pointless
-                    if transcoded_size > original_size {
-                        warn!(path=%video.path.display(), "Aborting transcode due to size increase");
+                    if (transcoded_size as f64) > transcode_threshold {
+                        warn!(
+                            path=%video.path.display(),
+                            threshold=ByteSize::b(transcode_threshold as u64).to_string_as(true),
+                            size=ByteSize::b(transcoded_size).to_string_as(true),
+                            "Aborting transcode"
+                        );
                         transcode_task.abort();
                         tokio::fs::remove_file(&transcoded_path).await?;
                         return Ok(None);
@@ -208,15 +221,17 @@ async fn main() -> Result<()> {
 
                 transcoded.map(|ts| Some((span, video, ts)))
             })
-            .filter_map(|res: Result<Option<(Span, VideoFile, TempFile)>>| async move {
-                match res {
-                    Ok(inner) => inner,
-                    Err(e) => {
-                        error!("{e:?}");
-                        None
+            .filter_map(
+                |res: Result<Option<(Span, VideoFile, TempFile)>>| async move {
+                    match res {
+                        Ok(inner) => inner,
+                        Err(e) => {
+                            error!("{e:?}");
+                            None
+                        }
                     }
-                }
-            })
+                },
+            )
             .par_then_unordered(None, |(span, original, transcode)| async move {
                 let transcode_info = MediaInfo::new(transcode.file_path())
                     .await
@@ -234,41 +249,20 @@ async fn main() -> Result<()> {
                     .metadata
                     .video_info()
                     .context("original has no video track")?;
-                let duration_diff = 100.0 - (100.0 * (transcode_info.duration / original_info.duration));
+                let duration_diff =
+                    100.0 - (100.0 * (transcode_info.duration / original_info.duration));
                 if duration_diff > 5.0 {
                     warn!(
-                        original =
-                            humantime::format_duration(Duration::from_secs_f64(original_info.duration))
-                                .to_string(),
-                        transcode =
-                            humantime::format_duration(Duration::from_secs_f64(transcode_info.duration))
-                                .to_string(),
+                        original = humantime::format_duration(Duration::from_secs_f64(
+                            original_info.duration
+                        ))
+                        .to_string(),
+                        transcode = humantime::format_duration(Duration::from_secs_f64(
+                            transcode_info.duration
+                        ))
+                        .to_string(),
                         "Ignoring transcode due to duration difference of {duration_diff:.2}%"
                     );
-                    span.pb_inc(1);
-                    return Ok(None);
-                }
-                let original_sz = tokio::fs::metadata(&original.path)
-                    .await
-                    .context("read original metadata")?
-                    .len();
-                let original_bs = ByteSize::b(original_sz);
-                let transcoded_sz = transcode
-                    .metadata()
-                    .await
-                    .context("read transcoded metadata")?
-                    .len();
-                let transcoded_bs = ByteSize::b(transcoded_sz);
-                let shrink_percentage = 100.0 - (100.0 * (transcoded_sz as f64 / original_sz as f64));
-                info!(
-                    path = %original.path.display(),
-                    "Transcode size {} -> {} ({:.2}%)",
-                    original_bs.to_string_as(true),
-                    transcoded_bs.to_string_as(true),
-                    shrink_percentage
-                );
-                if shrink_percentage < TRANSCODE_THRESHOLD_PERCENT {
-                    warn!("Ignoring transcode due to below-threshold gains of {shrink_percentage:.2}%");
                     span.pb_inc(1);
                     return Ok(None);
                 }
