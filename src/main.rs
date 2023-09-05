@@ -148,7 +148,8 @@ async fn main() -> Result<()> {
         span.pb_inc_length(1);
         Some((span, media))
     })
-    .filter_map(|opt| async move { opt })
+    .filter_map(|opt| async move { opt.map(future::ready) })
+    .buffer_unordered(20000)
     .then(|(span, video)| async move {
         if DRY_RUN.get().copied().unwrap_or(true) {
             debug!("Skipping due to dry-run");
