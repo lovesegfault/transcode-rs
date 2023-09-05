@@ -75,9 +75,9 @@ async fn main() -> Result<()> {
         ),
     ).with_span_child_prefix_symbol("↳ ").with_span_child_prefix_indent(" ");
     tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env())
         .with(tracing_subscriber::fmt::layer().with_writer(indicatif_layer.get_stderr_writer()))
         .with(indicatif_layer)
+        .with(EnvFilter::from_default_env())
         .init();
 
     let args = Args::parse();
