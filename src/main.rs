@@ -170,31 +170,27 @@ async fn main() -> Result<()> {
                     .len();
                 let transcode_threshold = (original_size as f64) * TRANSCODE_THRESHOLD;
 
+                let start_time = tokio::time::Instant::now();
                 let (transcoded_path, transcode_task) = video
                     .transcode_hevc_vaapi("/tmp")
                     .instrument(span.clone())
                     .await;
 
-                // wait for file to show up initially
-                while !transcoded_path.exists() {
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
-                // at this point, we can be sure the transcode has started
-                while !transcode_task.is_finished() {
-                    // this means the transcode task has already finished?
+                loop {
+                    // wait for file to show up initially
                     if !transcoded_path.exists() {
+                        if start_time.elapsed() > Duration::from_secs(5) {
+                            // this is way too long, something isn't right, avoid infinite loops
+                            anyhow::bail!(
+                                "Transcode file never showed up: '{}'",
+                                transcoded_path.display()
+                            );
+                        }
                         tokio::time::sleep(Duration::from_millis(100)).await;
                         continue;
                     }
                     // check the size of the transcoded file
-                    let Ok(transcoded_size) = tokio::fs::metadata(&transcoded_path)
-                        .await
-                        .map(|md| md.len())
-                    else {
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        continue;
-                    };
-                    // the transcode is pointless
+                    let transcoded_size = tokio::fs::metadata(&transcoded_path).await?.len();
                     if (transcoded_size as f64) > transcode_threshold {
                         warn!(
                             path=%video.path.display(),
@@ -205,6 +201,9 @@ async fn main() -> Result<()> {
                         transcode_task.abort();
                         tokio::fs::remove_file(&transcoded_path).await?;
                         return Ok(None);
+                    }
+                    if transcode_task.is_finished() {
+                        break;
                     }
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
