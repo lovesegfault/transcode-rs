@@ -552,6 +552,8 @@ impl VideoFile {
 
         cmd.arg(&transcoded_path);
 
+        cmd.kill_on_drop(true);
+
         let task = tokio::spawn(
             async move {
                 let _lock = ENCODER_LOCK.lock();
