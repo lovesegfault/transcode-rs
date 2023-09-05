@@ -21,7 +21,7 @@ use walkdir::WalkDir;
 
 const MEDIAINFO: &str = env!("MEDIAINFO_PATH");
 const FFMPEG: &str = env!("FFMPEG_PATH");
-const TRANSCODE_THRESHOLD: f64 = 0.7;
+const TRANSCODE_THRESHOLD: f64 = 0.6;
 
 static ENCODER_LOCK: Mutex<()> = Mutex::const_new(());
 static DRY_RUN: OnceCell<bool> = OnceCell::const_new();
