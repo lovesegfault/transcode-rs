@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
 use tokio::sync::{Mutex, OnceCell};
+use tokio::task::JoinSet;
 use tokio::{process::Command, task::spawn_blocking};
 use tokio_util::sync::ReusableBoxFuture;
 use tracing::{debug, error, info, info_span, warn, Instrument};
@@ -89,8 +90,9 @@ async fn main() -> Result<()> {
     let _pb_span_entered = pb_span.enter();
 
     let (send, recv) = async_priority_channel::unbounded();
+    let mut tasks = JoinSet::new();
 
-    let file_finder = tokio::spawn(async move {
+    tasks.spawn(async move {
         BlockingStream::new(
             args.media
                 .into_iter()
@@ -155,7 +157,7 @@ async fn main() -> Result<()> {
         .await;
     });
 
-    let transcoder = tokio::spawn(async move {
+    tasks.spawn(async move {
         PriorityReceiverStream::new(recv)
             .filter_map(|res| async move {
                 match res {
@@ -283,8 +285,9 @@ async fn main() -> Result<()> {
             .await;
     });
 
-    file_finder.await?;
-    transcoder.await?;
+    while let Some(res) = tasks.join_next().await {
+        res?;
+    }
 
     drop(_pb_span_entered);
     Ok(())
