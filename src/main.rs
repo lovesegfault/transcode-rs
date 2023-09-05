@@ -200,6 +200,27 @@ async fn main() -> Result<()> {
                 );
             }
 
+            let original_info = original
+                .metadata
+                .video_info()
+                .context("original has no video track")?;
+            let duration_diff =
+                100.0 - (100.0 * (transcode_info.duration / original_info.duration));
+            if duration_diff > 5.0 {
+                warn!(
+                    original =
+                        humantime::format_duration(Duration::from_secs_f64(original_info.duration))
+                            .to_string(),
+                    transcode = humantime::format_duration(Duration::from_secs_f64(
+                        transcode_info.duration
+                    ))
+                    .to_string(),
+                    "Ignoring transcode due to duration difference of {duration_diff:.2}%"
+                );
+                span.pb_inc(1);
+                return Ok(None);
+            }
+
             let original_sz = tokio::fs::metadata(&original.path)
                 .await
                 .context("read original metadata")?
@@ -339,6 +360,8 @@ struct VideoInfo {
     width: usize,
     #[serde(deserialize_with = "deserialize_number_from_string")]
     height: usize,
+    #[serde(deserialize_with = "deserialize_number_from_string")]
+    duration: f64,
 }
 
 struct VideoFile {
