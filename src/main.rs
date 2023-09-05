@@ -17,7 +17,6 @@ use tracing::{debug, error, info, info_span, warn, Instrument, Span};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 use walkdir::WalkDir;
 
 const MEDIAINFO: &str = env!("MEDIAINFO_PATH");
@@ -77,7 +76,6 @@ async fn main() -> Result<()> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_writer(indicatif_layer.get_stderr_writer()))
         .with(indicatif_layer)
-        .with(EnvFilter::from_default_env())
         .init();
 
     let args = Args::parse();
