@@ -14,7 +14,7 @@ use tokio::{
     sync::{Mutex, OnceCell},
     task::{JoinHandle, JoinSet},
 };
-use tracing::{debug, error, info, info_span, warn, Instrument, Span};
+use tracing::{debug, error, info, info_span, trace, warn, Instrument, Span};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use walkdir::WalkDir;
@@ -102,22 +102,22 @@ async fn main() -> Result<()> {
             };
             let path = entry.path().to_path_buf();
             if entry.path_is_symlink() {
-                debug!("skipping symlink: '{}'", path.display());
+                trace!("skipping symlink: '{}'", path.display());
                 return;
             }
             if path.is_dir() {
-                debug!("skipping directory: '{}'", path.display());
+                trace!("skipping directory: '{}'", path.display());
                 return;
             }
             let Some(ext) = path.extension() else {
-                debug!("skipping extensionless path: '{}'", path.display());
+                trace!("skipping extensionless path: '{}'", path.display());
                 return;
             };
             let video_exts = [
                 "avi", "flv", "m4v", "mkv", "mov", "mp4", "mpg", "ts", "webm", "wmv",
             ];
             if !video_exts.iter().any(|&e| e == ext) {
-                debug!(ext=%ext.to_string_lossy(), "skipping non-video file '{}'", path.display());
+                trace!(ext=%ext.to_string_lossy(), "skipping non-video file '{}'", path.display());
                 return;
             }
 
@@ -165,7 +165,7 @@ async fn main() -> Result<()> {
             })
             .then(|(span, video)| async move {
                 if DRY_RUN.get().copied().unwrap_or(true) {
-                    debug!("Skipping due to dry-run");
+                    trace!("Skipping due to dry-run");
                     return anyhow::Ok(None);
                 }
                 let original_size = tokio::fs::metadata(&video.path)
@@ -466,12 +466,11 @@ impl VideoFile {
 
         cmd.kill_on_drop(true);
 
-        debug!(ffmpeg_cmd=?cmd);
+        trace!(ffmpeg_cmd=?cmd);
 
         let task = tokio::spawn(
             async move {
                 let _lock = ENCODER_LOCK.lock().await;
-                debug!("starting ffmpeg transcode");
 
                 let log_path = out_dir.join("ffmpeg.log");
                 let log_file = tokio::fs::File::options()
@@ -495,6 +494,7 @@ impl VideoFile {
                     .into_std()
                     .await;
 
+                trace!("starting ffmpeg transcode");
                 let mut child = cmd
                     .stdin(std::process::Stdio::null())
                     .stdout(stdout)
@@ -503,6 +503,7 @@ impl VideoFile {
                     .context("spawn ffmpeg transcode")?;
 
                 let status = child.wait().await.context("run ffmpeg transcode")?;
+                trace!("finished");
 
                 if !status.success() {
                     anyhow::bail!("transcode failed, stderr: '{}'", log_path.display());
@@ -511,7 +512,6 @@ impl VideoFile {
                 drop(log_file);
                 tokio::fs::remove_file(&log_path).await.ok();
 
-                debug!("finished");
                 Ok(())
             }
             .instrument(Span::current()),
