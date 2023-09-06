@@ -138,6 +138,7 @@
           nativeBuildInputs = [ pkg-config ];
 
           buildInputs = [
+            ffmpeg
           ] ++ (lib.optionals stdenv.hostPlatform.isDarwin [
             libiconv
             darwin.apple_sdk.frameworks.Security
@@ -145,14 +146,12 @@
 
           propagatedBuildInputs = [
             ffmpeg
-            mediainfo
           ];
+
+          FFMPEG_PATH = "${ffmpeg}/bin/ffmpeg";
 
           CARGO_BUILD_TARGET = rustTarget;
           "CARGO_TARGET_${rustTargetEnv}_LINKER" = "${stdenv.cc.targetPrefix}cc";
-          MEDIAINFO_PATH = "${mediainfo}/bin/mediainfo";
-          FFMPEG_PATH = "${ffmpeg}/bin/ffmpeg";
-
         } // (lib.optionalAttrs (stdenv.buildPlatform != stdenv.hostPlatform) {
           depsBuildBuild = [ qemu ];
           "CARGO_TARGET_${rustTargetEnv}_RUNNER" = "qemu-${stdenv.hostPlatform.qemuArch}";
@@ -163,7 +162,6 @@
           , lib
           , pkg-config
           , ffmpeg
-          , mediainfo
           , libiconv
           , qemu
           , darwin ? null

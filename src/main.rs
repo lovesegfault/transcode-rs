@@ -2,11 +2,10 @@ use anyhow::{Context, Result};
 use async_tempfile::TempFile;
 use bytesize::ByteSize;
 use clap::Parser;
+use ffmpeg_next as ffmpeg;
 use futures::{prelude::*, StreamExt};
 use indicatif::{ProgressState, ProgressStyle};
 use par_stream::prelude::*;
-use serde::Deserialize;
-use serde_aux::prelude::*;
 use std::path::{Path, PathBuf};
 use std::{pin::Pin, time::Duration};
 use tokio::{
@@ -19,7 +18,6 @@ use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use walkdir::WalkDir;
 
-const MEDIAINFO: &str = env!("MEDIAINFO_PATH");
 const FFMPEG: &str = env!("FFMPEG_PATH");
 const TRANSCODE_THRESHOLD: f64 = 0.6;
 
@@ -80,6 +78,8 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    ffmpeg::init().context("initialize ffmpeg")?;
+
     DRY_RUN.get_or_init(|| async move { args.dry_run }).await;
 
     let pb_span = info_span!("transcode");
@@ -139,27 +139,21 @@ async fn main() -> Result<()> {
                     .await
                     .map_err(|e| {
                         span.pb_inc(1);
-                        error!(path = %path.display(), "failed to parse video metadata: {e:?}");
+                        error!(path = %path.display(), "failed to get video info: {e:?}");
                     })
                     .ok()?;
 
-                let Some(video_md) = video.metadata.video_info() else {
-                    warn!("No video metadata in video file");
-                    span.pb_inc(1);
-                    return None;
+                use ffmpeg::codec::Id;
+                match video.codec {
+                    Id::AV1 | Id::HEVC => {
+                        debug!(path=%path.display(), "skipping {:?} video", video.codec);
+                        span.pb_inc(1);
+                        return None;
+                    }
+                    _ => {
+                        info!(path=%path.display(), "enqueuing {:?} video", video.codec);
+                    }
                 };
-
-                if video_md.format == "AV1" {
-                    info!(path=%path.display(), "Skipping AV1 file");
-                    span.pb_inc(1);
-                    return None;
-                }
-
-                if video_md.format == "HEVC" {
-                    info!(path=%path.display(), "Skipping HEVC file");
-                    span.pb_inc(1);
-                    return None;
-                }
 
                 Some((span, video))
             })
@@ -234,39 +228,29 @@ async fn main() -> Result<()> {
                 },
             )
             .par_then_unordered(None, |(span, original, transcode)| async move {
-                let transcode_info = MediaInfo::new(transcode.file_path())
+                let (transcode_codec, transcode_duration) = VideoFile::new(transcode.file_path())
                     .await
-                    .context("read transcode mediainfo")?;
-                let transcode_info = transcode_info
-                    .video_info()
-                    .context("transcode has no video track")?;
-                if transcode_info.format != "HEVC" {
+                    .map(|vf| (vf.codec, vf.duration))
+                    .context("get transcode info")?;
+
+                if transcode_codec != ffmpeg::codec::Id::HEVC {
                     anyhow::bail!(
-                        "Transcode was not HEVC: '{}'",
+                        "Transcode was '{transcode_codec:?}' not HEVC: '{}'",
                         transcode.file_path().display()
                     );
                 }
-                let original_info = original
-                    .metadata
-                    .video_info()
-                    .context("original has no video track")?;
-                let duration_diff =
-                    100.0 - (100.0 * (transcode_info.duration / original_info.duration));
-                if duration_diff > 5.0 {
+
+                // sanity check duration
+                if (original.duration - transcode_duration).as_secs() > 5 {
                     warn!(
-                        original = humantime::format_duration(Duration::from_secs_f64(
-                            original_info.duration
-                        ))
-                        .to_string(),
-                        transcode = humantime::format_duration(Duration::from_secs_f64(
-                            transcode_info.duration
-                        ))
-                        .to_string(),
-                        "Ignoring transcode due to duration difference of {duration_diff:.2}%"
+                        original = humantime::format_duration(original.duration).to_string(),
+                        transcode = humantime::format_duration(transcode_duration).to_string(),
+                        "Ignoring transcode due to duration difference > 5s"
                     );
                     span.pb_inc(1);
                     return Ok(None);
                 }
+
                 Ok(Some((span, original, transcode)))
             })
             .filter_map(|res| async move {
@@ -344,92 +328,48 @@ impl<I: Send, P: Ord + Send> Stream for PriorityReceiverStream<I, P> {
     }
 }
 
-#[derive(Deserialize, Debug)]
-struct MediaInfo(Vec<TrackInfo>);
-
-impl MediaInfo {
-    async fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-
-        let mut mediainfo_cmd = Command::new(MEDIAINFO);
-        mediainfo_cmd.arg("--Output=JSON");
-        mediainfo_cmd.arg(&path);
-
-        let output = mediainfo_cmd.output().await.context("run mediainfo")?;
-        if !output.status.success() {
-            anyhow::bail!(
-                "failed to get mediainfo for '{}': {}",
-                path.display(),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-
-        let json: serde_json::Value =
-            serde_json::from_slice(&output.stdout).context("parse mediainfo")?;
-        let tracks = json
-            .get("media")
-            .and_then(|m| m.get("track"))
-            .cloned()
-            .context("get track info from mediainfo")?;
-        let metadata: MediaInfo = serde_json::from_value(tracks).context("parse track info")?;
-
-        Ok(metadata)
-    }
-
-    fn video_info(&self) -> Option<&VideoInfo> {
-        self.0.iter().find_map(|md| match md {
-            TrackInfo::General(_) => None,
-            TrackInfo::Video(vmd) => Some(vmd),
-            TrackInfo::Unknown => None,
-        })
-    }
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(tag = "@type")]
-enum TrackInfo {
-    General(GeneralInfo),
-    Video(VideoInfo),
-    #[serde(other)]
-    Unknown,
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
-#[allow(dead_code)]
-struct GeneralInfo {
-    #[serde(default, deserialize_with = "deserialize_number_from_string")]
-    video_count: usize,
-    #[serde(default, deserialize_with = "deserialize_number_from_string")]
-    audio_count: usize,
-    file_extension: String,
-    format: String,
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
-#[allow(dead_code)]
-struct VideoInfo {
-    format: String,
-    #[serde(deserialize_with = "deserialize_number_from_string")]
-    width: usize,
-    #[serde(deserialize_with = "deserialize_number_from_string")]
-    height: usize,
-    #[serde(deserialize_with = "deserialize_number_from_string")]
-    duration: f64,
-}
-
 struct VideoFile {
     path: PathBuf,
-    metadata: MediaInfo,
+    codec: ffmpeg::codec::Id,
+    duration: Duration,
 }
 
 impl VideoFile {
     pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let metadata = MediaInfo::new(&path).await?;
 
-        Ok(Self { path, metadata })
+        let (path, codec, duration) = tokio::task::spawn_blocking(move || {
+            let ctx = ffmpeg::format::input(&path).context("ffmpeg input")?;
+
+            let Some(video_stream) = ctx.streams().best(ffmpeg::media::Type::Video) else {
+                return anyhow::Ok(None);
+            };
+
+            let duration = video_stream.duration() as f64;
+            let time_base: f64 = video_stream.time_base().into();
+
+            dbg!(duration, time_base);
+            let duration = duration * time_base;
+
+            let duration =
+                Duration::try_from_secs_f64(duration).context("deduce video duration")?;
+
+            let codec = ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())
+                .context("codec context from parameters")?;
+            let codec = codec.id();
+
+            Ok(Some((path, codec, duration)))
+        })
+        .await
+        .context("spawn ffmpeg format analysis")?
+        .context("ffmpeg analysis")?
+        .context("no video stream in file")?;
+
+        Ok(Self {
+            path,
+            codec,
+            duration,
+        })
     }
 
     #[tracing::instrument(skip_all, fields(path = %self.path.display()))]
