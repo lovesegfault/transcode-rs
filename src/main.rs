@@ -171,10 +171,8 @@ async fn main() -> Result<()> {
                 let transcode_threshold = (original_size as f64) * TRANSCODE_THRESHOLD;
 
                 let start_time = tokio::time::Instant::now();
-                let (transcoded_path, transcode_task) = video
-                    .transcode_hevc_vaapi("/tmp")
-                    .instrument(span.clone())
-                    .await;
+                let (transcoded_path, transcode_task) =
+                    video.transcode_x265("/tmp").instrument(span.clone()).await;
 
                 loop {
                     // wait for file to show up initially
@@ -519,7 +517,7 @@ impl VideoFile {
     }
 
     #[tracing::instrument(skip_all, fields(path = %self.path.display()))]
-    pub async fn transcode_hevc_vaapi(
+    pub async fn transcode_x265(
         &self,
         out_dir: impl AsRef<Path>,
     ) -> (PathBuf, JoinHandle<Result<()>>) {
