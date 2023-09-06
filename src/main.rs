@@ -8,15 +8,15 @@ use par_stream::prelude::*;
 use serde::Deserialize;
 use serde_aux::prelude::*;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::time::Duration;
-use tokio::sync::{Mutex, OnceCell};
-use tokio::task::{JoinHandle, JoinSet};
-use tokio::{process::Command, task::spawn_blocking};
+use std::{pin::Pin, time::Duration};
+use tokio::{
+    process::Command,
+    sync::{Mutex, OnceCell},
+    task::{spawn_blocking, JoinHandle, JoinSet},
+};
 use tracing::{debug, error, info, info_span, warn, Instrument, Span};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use walkdir::WalkDir;
 
 const MEDIAINFO: &str = env!("MEDIAINFO_PATH");
