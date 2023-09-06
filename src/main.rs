@@ -470,7 +470,6 @@ struct GeneralInfo {
 #[serde(rename_all = "PascalCase")]
 #[allow(dead_code)]
 struct VideoInfo {
-    stream_order: String,
     format: String,
     #[serde(deserialize_with = "deserialize_number_from_string")]
     width: usize,
