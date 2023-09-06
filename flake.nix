@@ -79,22 +79,43 @@
           hostRustflags = [ "-Ctarget-cpu=skylake" ];
         };
 
+        config = { allowUnfree = true; };
+
         overlays = [
           rust.overlays.default
           (final: _: {
-            ffmpeg = final.ffmpeg_6-full;
+            ffmpeg = final.ffmpeg_6-headless.override {
+              withBluray = true;
+              withCelt = true;
+              withCrystalhd = true;
+              withFdkAac = true;
+              withGlslang = !final.stdenv.isDarwin;
+              withGsm = true;
+              withLibplacebo = !final.stdenv.isDarwin;
+              withOpencl = true;
+              withOpenh264 = true;
+              withOpenjpeg = true;
+              withOpenmpt = true;
+              withRav1e = true;
+              withSvg = true;
+              withSvtav1 = !final.stdenv.isAarch64;
+              withVoAmrwbenc = true;
+              withVulkan = !final.stdenv.isDarwin;
+              withXml2 = true;
+              withUnfree = true;
+            };
           })
         ];
 
         pkgs = import nixpkgs {
-          inherit localSystem overlays;
+          inherit localSystem overlays config;
           # NOTE: Edit this to cross-compile, e.g.
           # crossSystem = "aarch64-darwin"
           # crossSystem = lib.systems.examples.aarch64-multiplatform;
           crossSystem = localSystem;
         };
         skylakePkgs = import nixpkgs {
-          inherit localSystem;
+          inherit localSystem config;
           crossSystem = "x86_64-linux";
           overlays = overlays ++ [ skylakeOverlay ];
         };
