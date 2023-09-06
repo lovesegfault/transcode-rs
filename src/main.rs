@@ -528,15 +528,21 @@ impl VideoFile {
 
         let mut cmd = Command::new(FFMPEG);
 
-        cmd.arg("-i").arg(&self.path);
-
         #[rustfmt::skip]
         cmd.args([
             "-y",
             "-threads", "0",
+            "-hwaccel", "vaapi",
+            "-hwaccel_device", "/dev/dri/renderD128",
+        ]);
+
+        cmd.arg("-i").arg(&self.path);
+
+        #[rustfmt::skip]
+        cmd.args([
+            "-f", "matroska",
             "-c:v", "libx265",
             "-preset", "medium",
-            "-f", "matroska",
             "-c:a", "copy",
             "-c:s", "copy"
         ]);
