@@ -134,29 +134,33 @@ async fn main() -> Result<()> {
     tasks.spawn(async move {
         PriorityReceiverStream::new(recv)
             .map(move |(path, _prio)| (pb_span_transcoder.clone(), path))
-            .filter_map(|(span, path)| async move {
-                let video = VideoFile::new(&path)
-                    .await
-                    .map_err(|e| {
-                        span.pb_inc(1);
-                        error!(path = %path.display(), "failed to get video info: {e:?}");
-                    })
-                    .ok()?;
+            .map(|(span, path)| async move {
+                tokio::spawn(async move {
+                    let video = VideoFile::new(&path)
+                        .await
+                        .map_err(|e| {
+                            span.pb_inc(1);
+                            error!(path = %path.display(), "failed to get video info: {e:?}");
+                        })
+                        .ok()?;
 
-                use ffmpeg::codec::Id;
-                match video.codec {
-                    Id::AV1 | Id::HEVC => {
-                        debug!(path=%path.display(), "skipping {:?} video", video.codec);
-                        span.pb_inc(1);
-                        return None;
-                    }
-                    _ => {
-                        info!(path=%path.display(), "enqueuing {:?} video", video.codec);
-                    }
-                };
+                    use ffmpeg::codec::Id;
+                    match video.codec {
+                        Id::AV1 | Id::HEVC => {
+                            debug!(path=%path.display(), "skipping {:?} video", video.codec);
+                            span.pb_inc(1);
+                            return None;
+                        }
+                        _ => {
+                            info!(path=%path.display(), "enqueuing {:?} video", video.codec);
+                        }
+                    };
 
-                Some((span, video))
+                    Some((span, video))
+                })
             })
+            .buffered(100)
+            .filter_map(|opt| async move { opt.await.ok().flatten() })
             .then(|(span, video)| async move {
                 if DRY_RUN.get().copied().unwrap_or(true) {
                     trace!("Skipping due to dry-run");
