@@ -553,15 +553,31 @@ impl VideoFile {
             async move {
                 let _lock = ENCODER_LOCK.lock();
                 debug!("starting ffmpeg transcode");
-                let output = cmd.output().await.context("run ffmpeg transcode")?;
+
+                let out_file = TempFile::new()
+                    .await
+                    .context("create tempfile for ffmpeg output, using stdout")?;
+                debug!(
+                    "writing ffmpeg output to: '{}",
+                    out_file.file_path().display()
+                );
+
+                let stdout = std::process::Stdio::from(std::fs::File::open(out_file.file_path())?);
+
+                let output = cmd
+                    .stdout(stdout)
+                    .output()
+                    .await
+                    .context("run ffmpeg transcode")?;
                 if !output.status.success() {
+                    // leave the encoder log
+                    std::mem::forget(out_file);
                     anyhow::bail!(
                         "transcode failed: {}",
                         &String::from_utf8_lossy(&output.stderr)
                     );
                 }
                 debug!("finished");
-                drop(_lock);
                 Ok(())
             }
             .instrument(Span::current()),
