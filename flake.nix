@@ -63,7 +63,7 @@
               applyGraphite = applyFlags { cflags = [ "-fgraphite-identity" "-floop-nest-optimize" ]; };
             in
             {
-              ffmpeg = pipe prev.ffmpeg [ applyHost applyGraphite ];
+              ffmpeg = pipe (prev.ffmpeg.override { withFrei0r = false; }) [ applyHost applyGraphite ];
               x265 = pipe prev.x265 [ applyHost applyGraphite ];
             };
 
