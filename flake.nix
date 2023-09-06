@@ -167,6 +167,8 @@
           transcodersSkylake = skylakePkgs.callPackage (buildExpr craneLib.buildPackage) { };
         };
 
+        inherit pkgs;
+
         devShells.default = pkgs.callPackage
           (
             { mkShell
