@@ -537,7 +537,7 @@ impl VideoFile {
             "-threads", "0",
             "-c:v", "libx265",
             "-crf", "23",
-            "-preset", "slow",
+            "-preset", "medium",
             "-f", "matroska",
             "-c:a", "copy",
             "-c:s", "copy"
