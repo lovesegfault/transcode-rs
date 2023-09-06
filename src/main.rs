@@ -344,7 +344,7 @@ impl<I: Send, P: Ord + Send> Stream for PriorityReceiverStream<I, P> {
     }
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug)]
 struct MediaInfo(Vec<TrackInfo>);
 
 impl MediaInfo {
@@ -383,17 +383,9 @@ impl MediaInfo {
             TrackInfo::Unknown => None,
         })
     }
-
-    fn general_info(&self) -> Option<&GeneralInfo> {
-        self.0.iter().find_map(|md| match md {
-            TrackInfo::General(gmd) => Some(gmd),
-            TrackInfo::Video(_) => None,
-            TrackInfo::Unknown => None,
-        })
-    }
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug)]
 #[serde(tag = "@type")]
 enum TrackInfo {
     General(GeneralInfo),
@@ -402,7 +394,7 @@ enum TrackInfo {
     Unknown,
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 #[allow(dead_code)]
 struct GeneralInfo {
@@ -411,12 +403,10 @@ struct GeneralInfo {
     #[serde(default, deserialize_with = "deserialize_number_from_string")]
     audio_count: usize,
     file_extension: String,
-    #[serde(default, deserialize_with = "deserialize_number_from_string")]
-    file_size: usize,
     format: String,
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug)]
 #[serde(rename_all = "PascalCase")]
 #[allow(dead_code)]
 struct VideoInfo {
@@ -432,32 +422,6 @@ struct VideoInfo {
 struct VideoFile {
     path: PathBuf,
     metadata: MediaInfo,
-}
-
-impl PartialEq for VideoFile {
-    fn eq(&self, other: &Self) -> bool {
-        self.path == other.path
-    }
-}
-
-impl Eq for VideoFile {}
-
-// ord by size
-impl PartialOrd for VideoFile {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        let self_sz = self.metadata.general_info()?.file_size;
-        let other_sz = other.metadata.general_info()?.file_size;
-        self_sz.partial_cmp(&other_sz)
-    }
-}
-
-impl Ord for VideoFile {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        match self.partial_cmp(other) {
-            Some(ord) => ord,
-            None => std::cmp::Ordering::Equal,
-        }
-    }
 }
 
 impl VideoFile {
