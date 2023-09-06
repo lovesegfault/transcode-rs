@@ -12,7 +12,7 @@ use std::{pin::Pin, time::Duration};
 use tokio::{
     process::Command,
     sync::{Mutex, OnceCell},
-    task::{spawn_blocking, JoinHandle, JoinSet},
+    task::{JoinHandle, JoinSet},
 };
 use tracing::{debug, error, info, info_span, warn, Instrument, Span};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
@@ -85,26 +85,22 @@ async fn main() -> Result<()> {
     let pb_span = info_span!("transcode");
     pb_span.pb_set_style(&ProgressStyle::default_bar());
     pb_span.pb_set_length(1);
-    let pb_span_clone = pb_span.clone();
+
+    let pb_span_transcoder = pb_span.clone();
+    let pb_span_finder = pb_span.clone();
+
     let _pb_span_entered = pb_span.enter();
 
     let (send, recv) = async_priority_channel::unbounded();
     let mut tasks = JoinSet::new();
 
-    tasks.spawn(async move {
-        BlockingStream::new(
-            args.media
-                .into_iter()
-                .map(|p| WalkDir::new(p).into_iter())
-                .flatten(),
-        )
-        .map(move |entry| (send.clone(), pb_span_clone.clone(), entry))
-        .for_each_concurrent(None, |(send, span, entry)| async move {
+    tasks.spawn_blocking(move || {
+        args.media.into_iter().map(WalkDir::new).flat_map(IntoIterator::into_iter).for_each(|entry| {
             let Ok(entry) = entry else {
                 warn!("skipping entry: {entry:?}");
                 return;
             };
-            let path = entry.path();
+            let path = entry.path().to_path_buf();
             if entry.path_is_symlink() {
                 debug!("skipping symlink: '{}'", path.display());
                 return;
@@ -125,40 +121,48 @@ async fn main() -> Result<()> {
                 return;
             }
 
-            let Ok(media) = VideoFile::new(&path).await.map_err(|e| {
-                error!(path=%path.display(), "failed to parse video metadata: {e:?}");
-                e
-            }) else {
+            let priority = std::fs::metadata(&path).map(|md| md.len()).unwrap_or(0);
+
+            if let Err(e) = send.try_send(path, priority) {
+                error!("skipped file due to channel error: {e:?}");
                 return;
             };
-            let Some(video_md) = media.metadata.video_info() else {
-                warn!("No video metadata in video file");
-                return;
-            };
-
-            if video_md.format == "AV1" {
-                info!(path=%path.display(), "Skipping AV1 file");
-                span.pb_inc(1);
-                return;
-            }
-
-            if video_md.format == "HEVC" {
-                info!(path=%path.display(), "Skipping HEVC file");
-                span.pb_inc(1);
-                return;
-            }
-
-            info!("Enqueued '{}'", path.display());
-            span.pb_inc_length(1);
-            let prio = media.metadata.file_size().unwrap_or_default();
-            send.send((span, media), prio).await.unwrap();
-        })
-        .await;
+            pb_span_finder.pb_inc_length(1);
+        });
     });
 
     tasks.spawn(async move {
         PriorityReceiverStream::new(recv)
-            .map(|(inner, _prio)| inner)
+            .map(move |(path, _prio)| (pb_span_transcoder.clone(), path))
+            .filter_map(|(span, path)| async move {
+                let video = VideoFile::new(&path)
+                    .await
+                    .map_err(|e| {
+                        span.pb_inc(1);
+                        error!(path = %path.display(), "failed to parse video metadata: {e:?}");
+                    })
+                    .ok()?;
+
+                let Some(video_md) = video.metadata.video_info() else {
+                    warn!("No video metadata in video file");
+                    span.pb_inc(1);
+                    return None;
+                };
+
+                if video_md.format == "AV1" {
+                    info!(path=%path.display(), "Skipping AV1 file");
+                    span.pb_inc(1);
+                    return None;
+                }
+
+                if video_md.format == "HEVC" {
+                    info!(path=%path.display(), "Skipping HEVC file");
+                    span.pb_inc(1);
+                    return None;
+                }
+
+                Some((span, video))
+            })
             .then(|(span, video)| async move {
                 if DRY_RUN.get().copied().unwrap_or(true) {
                     debug!("Skipping due to dry-run");
@@ -340,54 +344,6 @@ impl<I: Send, P: Ord + Send> Stream for PriorityReceiverStream<I, P> {
     }
 }
 
-struct BlockingStream<N, I>(BlockingState<N, I>);
-
-enum BlockingState<N, I> {
-    Idle(Option<I>),
-    Busy(tokio::task::JoinHandle<(I, Option<N>)>),
-}
-
-impl<N, I> BlockingStream<N, I> {
-    fn new(inner: I) -> Self
-    where
-        I: Iterator<Item = N>,
-    {
-        BlockingStream(BlockingState::Idle(Some(inner)))
-    }
-}
-
-impl<N: Send + 'static, I: Iterator<Item = N> + Send + Unpin + 'static> Stream
-    for BlockingStream<N, I>
-{
-    type Item = <I as Iterator>::Item;
-    fn poll_next(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>>
-    where
-        <I as Iterator>::Item: Send,
-    {
-        loop {
-            match &mut self.0 {
-                BlockingState::Idle(opt) => {
-                    let mut inner = opt.take().unwrap();
-                    self.0 = BlockingState::Busy(spawn_blocking(move || {
-                        let next = inner.next();
-                        (inner, next)
-                    }));
-                }
-                BlockingState::Busy(task) => {
-                    let (inner, opt) = futures::ready!(Pin::new(task).poll(cx))
-                        .context("walkdir blocking task")
-                        .unwrap();
-                    self.0 = BlockingState::Idle(Some(inner));
-                    return std::task::Poll::Ready(opt);
-                }
-            }
-        }
-    }
-}
-
 #[derive(Deserialize, Debug, PartialEq)]
 struct MediaInfo(Vec<TrackInfo>);
 
@@ -434,10 +390,6 @@ impl MediaInfo {
             TrackInfo::Video(_) => None,
             TrackInfo::Unknown => None,
         })
-    }
-
-    fn file_size(&self) -> Option<usize> {
-        self.general_info().map(|info| info.file_size)
     }
 }
 
