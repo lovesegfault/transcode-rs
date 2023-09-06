@@ -553,27 +553,32 @@ impl VideoFile {
                 let _lock = ENCODER_LOCK.lock();
                 debug!("starting ffmpeg transcode");
 
-                let out_file = TempFile::new()
+                let ffmpeg_log = TempFile::new_with_name("ffmpeg.log")
                     .await
                     .context("create tempfile for ffmpeg output")?;
                 debug!(
                     "writing ffmpeg output to: '{}",
-                    out_file.file_path().display()
+                    ffmpeg_log.file_path().display()
                 );
 
-                let stderr_path = out_file.file_path();
-                let stdio = std::process::Stdio::from(std::fs::File::open(stderr_path)?);
+                let log_path = ffmpeg_log.file_path();
+                let stdout = std::process::Stdio::from(std::fs::File::open(log_path)?);
+                let stderr = std::process::Stdio::from(std::fs::File::open(log_path)?);
 
-                let output = cmd
-                    .stderr(stdio)
-                    .output()
-                    .await
-                    .context("run ffmpeg transcode")?;
-                if !output.status.success() {
+                let mut child = cmd
+                    .stdin(std::process::Stdio::null())
+                    .stdout(stdout)
+                    .stderr(stderr)
+                    .spawn()
+                    .context("spawn ffmpeg transcode")?;
+
+                let status = child.wait().await.context("run ffmpeg transcode")?;
+
+                if !status.success() {
                     // leave the encoder log
-                    let stderr_path = stderr_path.clone();
-                    std::mem::forget(out_file);
-                    anyhow::bail!("transcode failed, stderr: '{}'", stderr_path.display());
+                    let log_path = log_path.clone();
+                    std::mem::forget(ffmpeg_log);
+                    anyhow::bail!("transcode failed, stderr: '{}'", log_path.display());
                 }
                 debug!("finished");
                 Ok(())
