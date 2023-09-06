@@ -556,7 +556,7 @@ impl VideoFile {
 
         let task = tokio::spawn(
             async move {
-                let _lock = ENCODER_LOCK.lock();
+                let _lock = ENCODER_LOCK.lock().await;
                 debug!("starting ffmpeg transcode");
 
                 let log_path = out_dir.join("ffmpeg.log");
