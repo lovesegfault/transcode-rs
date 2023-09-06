@@ -553,6 +553,8 @@ impl VideoFile {
 
         cmd.kill_on_drop(true);
 
+        debug!(ffmpeg_cmd=?cmd);
+
         let task = tokio::spawn(
             async move {
                 let _lock = ENCODER_LOCK.lock();
