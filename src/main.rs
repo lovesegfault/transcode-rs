@@ -555,26 +555,25 @@ impl VideoFile {
 
                 let out_file = TempFile::new()
                     .await
-                    .context("create tempfile for ffmpeg output, using stdout")?;
+                    .context("create tempfile for ffmpeg output")?;
                 debug!(
                     "writing ffmpeg output to: '{}",
                     out_file.file_path().display()
                 );
 
-                let stdout = std::process::Stdio::from(std::fs::File::open(out_file.file_path())?);
+                let stderr_path = out_file.file_path();
+                let stdio = std::process::Stdio::from(std::fs::File::open(stderr_path)?);
 
                 let output = cmd
-                    .stdout(stdout)
+                    .stderr(stdio)
                     .output()
                     .await
                     .context("run ffmpeg transcode")?;
                 if !output.status.success() {
                     // leave the encoder log
+                    let stderr_path = stderr_path.clone();
                     std::mem::forget(out_file);
-                    anyhow::bail!(
-                        "transcode failed: {}",
-                        &String::from_utf8_lossy(&output.stderr)
-                    );
+                    anyhow::bail!("transcode failed, stderr: '{}'", stderr_path.display());
                 }
                 debug!("finished");
                 Ok(())
