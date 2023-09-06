@@ -61,14 +61,9 @@
 
               applyHost = applyFlags { cflags = hostCFlags; goflags = hostGoFlags; rustflags = hostRustflags; };
               applyGraphite = applyFlags { cflags = [ "-fgraphite-identity" "-floop-nest-optimize" ]; };
-              applyLTO = applyFlags {
-                # FIXME: Broken: https://github.com/NixOS/nixpkgs/pull/188544
-                cflags = [ "-flto=auto" "-fuse-linker-plugin" ];
-                rustflags = [ "-Clinker-plugin-lto" "-Clto" "-Ccodegen-units=1" ];
-              };
             in
             {
-              ffmpeg_6-full = pipe prev.ffmpeg_6-full [ applyHost applyGraphite ];
+              ffmpeg = pipe prev.ffmpeg [ applyHost applyGraphite ];
               x265 = pipe prev.x265 [ applyHost applyGraphite ];
             };
 
@@ -84,18 +79,24 @@
           hostRustflags = [ "-Ctarget-cpu=skylake" ];
         };
 
+        overlays = [
+          rust.overlays.default
+          (final: _: {
+            ffmpeg = final.ffmpeg_6-full;
+          })
+        ];
+
         pkgs = import nixpkgs {
-          inherit localSystem;
+          inherit localSystem overlays;
           # NOTE: Edit this to cross-compile, e.g.
           # crossSystem = "aarch64-darwin"
           # crossSystem = lib.systems.examples.aarch64-multiplatform;
           crossSystem = localSystem;
-          overlays = [ rust.overlays.default ];
         };
         skylakePkgs = import nixpkgs {
           inherit localSystem;
           crossSystem = "x86_64-linux";
-          overlays = [ rust.overlays.default skylakeOverlay ];
+          overlays = overlays ++ [ skylakeOverlay ];
         };
 
         inherit (pkgs.stdenv) buildPlatform hostPlatform;
@@ -122,14 +123,14 @@
           ]);
 
           propagatedBuildInputs = [
-            ffmpeg_6-full
+            ffmpeg
             mediainfo
           ];
 
           CARGO_BUILD_TARGET = rustTarget;
           "CARGO_TARGET_${rustTargetEnv}_LINKER" = "${stdenv.cc.targetPrefix}cc";
           MEDIAINFO_PATH = "${mediainfo}/bin/mediainfo";
-          FFMPEG_PATH = "${ffmpeg_6-full}/bin/ffmpeg";
+          FFMPEG_PATH = "${ffmpeg}/bin/ffmpeg";
 
         } // (lib.optionalAttrs (stdenv.buildPlatform != stdenv.hostPlatform) {
           depsBuildBuild = [ qemu ];
@@ -140,7 +141,7 @@
           { stdenv
           , lib
           , pkg-config
-          , ffmpeg_6-full
+          , ffmpeg
           , mediainfo
           , libiconv
           , qemu
