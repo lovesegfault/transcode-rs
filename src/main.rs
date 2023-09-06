@@ -523,8 +523,9 @@ impl VideoFile {
         &self,
         out_dir: impl AsRef<Path>,
     ) -> (PathBuf, JoinHandle<Result<()>>) {
+        let out_dir = out_dir.as_ref().to_path_buf();
         let file_name = self.path.file_name().expect("video file has no file name");
-        let transcoded_path = out_dir.as_ref().join(file_name).with_extension("mkv");
+        let transcoded_path = out_dir.join(file_name).with_extension("mkv");
 
         let mut cmd = Command::new(FFMPEG);
 
@@ -558,17 +559,27 @@ impl VideoFile {
                 let _lock = ENCODER_LOCK.lock();
                 debug!("starting ffmpeg transcode");
 
-                let ffmpeg_log = TempFile::new_with_name("ffmpeg.log")
+                let log_path = out_dir.join("ffmpeg.log");
+                let log_file = tokio::fs::File::options()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
                     .await
-                    .context("create tempfile for ffmpeg output")?;
-                debug!(
-                    "writing ffmpeg output to: '{}",
-                    ffmpeg_log.file_path().display()
-                );
+                    .context("open ffmpeg log")?;
+                debug!("writing ffmpeg output to: '{}", log_path.display());
 
-                let log_path = ffmpeg_log.file_path();
-                let stdout = std::process::Stdio::from(std::fs::File::open(log_path)?);
-                let stderr = std::process::Stdio::from(std::fs::File::open(log_path)?);
+                let stdout = log_file
+                    .try_clone()
+                    .await
+                    .context("clone log file as stdout")?
+                    .into_std()
+                    .await;
+                let stderr = log_file
+                    .try_clone()
+                    .await
+                    .context("clone log file as stderr")?
+                    .into_std()
+                    .await;
 
                 let mut child = cmd
                     .stdin(std::process::Stdio::null())
@@ -580,11 +591,12 @@ impl VideoFile {
                 let status = child.wait().await.context("run ffmpeg transcode")?;
 
                 if !status.success() {
-                    // leave the encoder log
-                    let log_path = log_path.clone();
-                    std::mem::forget(ffmpeg_log);
                     anyhow::bail!("transcode failed, stderr: '{}'", log_path.display());
                 }
+
+                drop(log_file);
+                tokio::fs::remove_file(&log_path).await.ok();
+
                 debug!("finished");
                 Ok(())
             }
