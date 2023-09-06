@@ -36,6 +36,54 @@
       let
         inherit (nixpkgs) lib;
 
+        optimizedOverlayForHost = { hostCFlags ? [ ], hostRustflags ? [ ], hostGoFlags ? { } }:
+          final: prev:
+            let
+              inherit (prev.lib) concatStringsSep optionalAttrs pipe;
+
+              appendFlags = new: old:
+                with builtins;
+                if isString old then concatStringsSep " " ([ old ] ++ new)
+                else if isList old then concatStringsSep " " (old ++ new)
+                else (concatStringsSep " " new);
+
+              applyFlags = { cflags ? [ ], rustflags ? [ ], goflags ? { } }: pkg:
+                pkg.overrideAttrs (old:
+                  (optionalAttrs (cflags != [ ]) {
+                    NIX_CFLAGS_COMPILE = appendFlags cflags (old.NIX_CFLAGS_COMPILE or null);
+                    NIX_CFLAGS_LINK = appendFlags cflags (old.NIX_CFLAGS_LINK or null);
+                  })
+                  // (optionalAttrs (rustflags != [ ]) {
+                    CARGO_BUILD_RUSTFLAGS = appendFlags rustflags (old.CARGO_BUILD_RUSTFLAGS or null);
+                  })
+                  // goflags
+                );
+
+              applyHost = applyFlags { cflags = hostCFlags; goflags = hostGoFlags; rustflags = hostRustflags; };
+              applyGraphite = applyFlags { cflags = [ "-fgraphite-identity" "-floop-nest-optimize" ]; };
+              applyLTO = applyFlags {
+                # FIXME: Broken: https://github.com/NixOS/nixpkgs/pull/188544
+                cflags = [ "-flto=auto" "-fuse-linker-plugin" ];
+                rustflags = [ "-Clinker-plugin-lto" "-Clto" "-Ccodegen-units=1" ];
+              };
+            in
+            {
+              ffmpeg_6-full = pipe prev.ffmpeg_6-full [ applyHost applyGraphite ];
+              x265 = pipe prev.x265 [ applyHost applyGraphite ];
+            };
+
+        skylakeOverlay = optimizedOverlayForHost {
+          hostCFlags = [
+            "-march=skylake"
+            "-mabm"
+            "--param=l1-cache-line-size=64"
+            "--param=l1-cache-size=32"
+            "--param=l2-cache-size=8192"
+          ];
+          hostGoFlags.GOAMD64 = "v3";
+          hostRustflags = [ "-Ctarget-cpu=skylake" ];
+        };
+
         pkgs = import nixpkgs {
           inherit localSystem;
           # NOTE: Edit this to cross-compile, e.g.
@@ -43,6 +91,11 @@
           # crossSystem = lib.systems.examples.aarch64-multiplatform;
           crossSystem = localSystem;
           overlays = [ rust.overlays.default ];
+        };
+        skylakePkgs = import nixpkgs {
+          inherit localSystem;
+          crossSystem = "x86_64-linux";
+          overlays = [ rust.overlays.default skylakeOverlay ];
         };
 
         inherit (pkgs.stdenv) buildPlatform hostPlatform;
@@ -110,6 +163,7 @@
         packages = {
           default = self.packages.${buildPlatform.system}.transcoders;
           transcoders = pkgs.callPackage (buildExpr craneLib.buildPackage) { };
+          transcodersSkylake = skylakePkgs.callPackage (buildExpr craneLib.buildPackage) { };
         };
 
         devShells.default = pkgs.callPackage
