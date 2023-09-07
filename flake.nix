@@ -135,7 +135,10 @@
         commonExpr = args: with args; ({
           src = craneLib.cleanCargoSource (craneLib.path ./.);
 
-          nativeBuildInputs = [ pkg-config ];
+          nativeBuildInputs = [
+            pkg-config
+            llvmPackages_latest.clang
+          ];
 
           buildInputs = [
             ffmpeg
@@ -149,6 +152,7 @@
           ];
 
           FFMPEG_PATH = "${ffmpeg}/bin/ffmpeg";
+          LIBCLANG_PATH = "${llvmPackages_latest.libclang.lib}/lib";
 
           CARGO_BUILD_TARGET = rustTarget;
           "CARGO_TARGET_${rustTargetEnv}_LINKER" = "${stdenv.cc.targetPrefix}cc";
@@ -162,6 +166,7 @@
           , lib
           , pkg-config
           , ffmpeg
+          , llvmPackages_latest
           , libiconv
           , qemu
           , darwin ? null
