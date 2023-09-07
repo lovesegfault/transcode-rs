@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::{pin::Pin, time::Duration};
 use tokio::{
     process::Command,
-    sync::{Mutex, OnceCell},
+    sync::OnceCell,
     task::{JoinHandle, JoinSet},
 };
 use tracing::{debug, error, info, info_span, trace, warn, Instrument, Span};
@@ -21,7 +21,6 @@ use walkdir::WalkDir;
 const FFMPEG: &str = env!("FFMPEG_PATH");
 const TRANSCODE_THRESHOLD: f64 = 0.6;
 
-static ENCODER_LOCK: Mutex<()> = Mutex::const_new(());
 static DRY_RUN: OnceCell<bool> = OnceCell::const_new();
 
 #[derive(Parser)]
@@ -409,11 +408,9 @@ impl VideoFile {
 
         trace!(ffmpeg_cmd=?cmd);
 
+        let log_path = transcoded_path.with_extension("log");
         let task = tokio::spawn(
             async move {
-                let _lock = ENCODER_LOCK.lock().await;
-
-                let log_path = out_dir.join("ffmpeg.log");
                 let log_file = tokio::fs::File::options()
                     .create(true)
                     .append(true)
