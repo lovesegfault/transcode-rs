@@ -134,7 +134,7 @@ async fn main() -> Result<()> {
     tasks.spawn(async move {
         PriorityReceiverStream::new(recv)
             .map(move |(path, _prio)| (pb_span_transcoder.clone(), path))
-            .map(|(span, path)| async move {
+            .then(|(span, path)| async move {
                 tokio::spawn(async move {
                     let video = VideoFile::new(&path)
                         .await
@@ -160,7 +160,7 @@ async fn main() -> Result<()> {
                 })
             })
             .buffered(100)
-            .filter_map(|opt| async move { opt.await.ok().flatten() })
+            .filter_map(|opt| async move { opt.ok().flatten() })
             .then(|(span, video)| async move {
                 if DRY_RUN.get().copied().unwrap_or(true) {
                     trace!("Skipping due to dry-run");
