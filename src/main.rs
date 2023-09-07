@@ -401,6 +401,7 @@ impl VideoFile {
         cmd.args([
             "-f", "matroska",
             "-c:v", "libx265",
+            "-crf", "25",
             "-preset", "medium",
             "-c:a", "copy",
             "-c:s", "copy"
