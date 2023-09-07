@@ -352,7 +352,6 @@ impl VideoFile {
             let duration = video_stream.duration() as f64;
             let time_base: f64 = video_stream.time_base().into();
 
-            dbg!(duration, time_base);
             let duration = duration * time_base;
 
             let duration =
