@@ -232,9 +232,9 @@ async fn main() -> Result<()> {
                 },
             )
             .par_then_unordered(None, |(span, original, transcode)| async move {
-                let (transcode_codec, transcode_duration) = VideoFile::new(transcode.file_path())
+                let (transcode_codec, transcode_frames) = VideoFile::new(transcode.file_path())
                     .await
-                    .map(|vf| (vf.codec, vf.duration))
+                    .map(|vf| (vf.codec, vf.frames))
                     .context("get transcode info")?;
 
                 if transcode_codec != ffmpeg::codec::Id::HEVC {
@@ -244,12 +244,13 @@ async fn main() -> Result<()> {
                     );
                 }
 
-                // sanity check duration
-                if (original.duration - transcode_duration).as_secs() > 5 {
+                let frame_diff_threshold = ((original.frames as f64) * 0.1) as u64;
+                let frame_diff = original.frames.saturating_sub(transcode_frames);
+                if frame_diff > frame_diff_threshold {
                     warn!(
-                        original = humantime::format_duration(original.duration).to_string(),
-                        transcode = humantime::format_duration(transcode_duration).to_string(),
-                        "Ignoring transcode due to duration difference > 5s"
+                        original = original.frames,
+                        transcode = transcode_frames,
+                        "Ignoring transcode due to frame count difference > 1%"
                     );
                     span.pb_inc(1);
                     return Ok(None);
@@ -335,33 +336,29 @@ impl<I: Send, P: Ord + Send> Stream for PriorityReceiverStream<I, P> {
 struct VideoFile {
     path: PathBuf,
     codec: ffmpeg::codec::Id,
-    duration: Duration,
+    frames: u64,
 }
 
 impl VideoFile {
     pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
 
-        let (path, codec, duration) = tokio::task::spawn_blocking(move || {
+        let (path, codec, frames) = tokio::task::spawn_blocking(move || {
             let ctx = ffmpeg::format::input(&path).context("ffmpeg input")?;
 
             let Some(video_stream) = ctx.streams().best(ffmpeg::media::Type::Video) else {
                 return anyhow::Ok(None);
             };
 
-            let duration = video_stream.duration() as f64;
-            let time_base: f64 = video_stream.time_base().into();
-
-            let duration = duration * time_base;
-
-            let duration =
-                Duration::try_from_secs_f64(duration).context("deduce video duration")?;
+            let frames = video_stream.frames();
+            anyhow::ensure!(frames > 0, "Non-natural frame count, rejecting file");
+            let frames = frames as u64;
 
             let codec = ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())
                 .context("codec context from parameters")?;
             let codec = codec.id();
 
-            Ok(Some((path, codec, duration)))
+            Ok(Some((path, codec, frames)))
         })
         .await
         .context("spawn ffmpeg format analysis")?
@@ -371,7 +368,7 @@ impl VideoFile {
         Ok(Self {
             path,
             codec,
-            duration,
+            frames,
         })
     }
 
