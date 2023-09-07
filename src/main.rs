@@ -160,7 +160,7 @@ async fn main() -> Result<()> {
             })
             .buffered(100)
             .filter_map(|opt| async move { opt.ok().flatten() })
-            .then(|(span, video)| async move {
+            .par_then(0.25, |(span, video)| async move {
                 if DRY_RUN.get().copied().unwrap_or(true) {
                     trace!("Skipping due to dry-run");
                     return anyhow::Ok(None);
