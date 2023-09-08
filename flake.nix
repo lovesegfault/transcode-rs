@@ -79,8 +79,8 @@
           hostRustflags = [ "-Ctarget-cpu=skylake" ];
         };
 
-        ffmpegFullOverlay = final: _: {
-          ffmpeg = final.ffmpeg.override {
+        ffmpegFullOverlay = final: prev: {
+          ffmpeg = prev.ffmpeg.override {
             withBluray = true;
             withCelt = true;
             withCrystalhd = true;
