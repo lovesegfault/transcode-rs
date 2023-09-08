@@ -79,31 +79,35 @@
           hostRustflags = [ "-Ctarget-cpu=skylake" ];
         };
 
+        ffmpegFullOverlay = final: _: {
+          ffmpeg = prev.ffmpeg.override {
+            withBluray = true;
+            withCelt = true;
+            withCrystalhd = true;
+            withFdkAac = true;
+            withGlslang = !final.stdenv.isDarwin;
+            withGsm = true;
+            withLibplacebo = !final.stdenv.isDarwin;
+            withOpencl = true;
+            withOpenh264 = true;
+            withOpenjpeg = true;
+            withOpenmpt = true;
+            withRav1e = true;
+            withSvg = true;
+            withSvtav1 = !final.stdenv.isAarch64;
+            withVoAmrwbenc = true;
+            withVulkan = !final.stdenv.isDarwin;
+            withXml2 = true;
+            withUnfree = true;
+          };
+        };
+
         config = { allowUnfree = true; };
 
         overlays = [
           rust.overlays.default
           (final: _: {
-            ffmpeg = final.ffmpeg_6-headless.override {
-              withBluray = true;
-              withCelt = true;
-              withCrystalhd = true;
-              withFdkAac = true;
-              withGlslang = !final.stdenv.isDarwin;
-              withGsm = true;
-              withLibplacebo = !final.stdenv.isDarwin;
-              withOpencl = true;
-              withOpenh264 = true;
-              withOpenjpeg = true;
-              withOpenmpt = true;
-              withRav1e = true;
-              withSvg = true;
-              withSvtav1 = !final.stdenv.isAarch64;
-              withVoAmrwbenc = true;
-              withVulkan = !final.stdenv.isDarwin;
-              withXml2 = true;
-              withUnfree = true;
-            };
+            ffmpeg = final.ffmpeg_6-headless;
           })
         ];
 
@@ -117,7 +121,7 @@
         skylakePkgs = import nixpkgs {
           inherit localSystem config;
           crossSystem = "x86_64-linux";
-          overlays = overlays ++ [ skylakeOverlay ];
+          overlays = overlays ++ [ skylakeOverlay ffmpegFullOverlay ];
         };
 
         inherit (pkgs.stdenv) buildPlatform hostPlatform;
