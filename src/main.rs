@@ -212,7 +212,10 @@ async fn main() -> Result<()> {
                             "Aborting transcode"
                         );
                         transcode_task.abort();
-                        tokio::fs::remove_file(&transcoded_path).await?;
+                        tokio::fs::remove_file(&transcoded_path).await.ok();
+                        tokio::fs::remove_file(&transcoded_path.with_extension("log"))
+                            .await
+                            .ok();
                         return Ok(None);
                     }
                     if transcode_task.is_finished() {
