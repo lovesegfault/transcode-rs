@@ -142,7 +142,7 @@ async fn main() -> Result<()> {
             .or_else(|| {
                 std::thread::available_parallelism()
                     .ok()
-                    .map(|ncpu| ((usize::from(ncpu)) / 4).max(1))
+                    .map(|ncpu| ((usize::from(ncpu)) / 2).max(1))
             })
             .unwrap_or(1);
         PriorityReceiverStream::new(recv)
