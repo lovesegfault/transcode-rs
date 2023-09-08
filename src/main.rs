@@ -396,7 +396,7 @@ impl VideoFile {
     ) -> (PathBuf, JoinHandle<Result<()>>) {
         let out_dir = out_dir.as_ref().to_path_buf();
         let file_name = self.path.file_name().expect("video file has no file name");
-        let transcoded_path = out_dir.join(file_name).with_extension("mkv");
+        let transcoded_path = out_dir.join(file_name).with_extension("mp4");
 
         let mut cmd = Command::new(FFMPEG);
 
@@ -412,7 +412,7 @@ impl VideoFile {
 
         #[rustfmt::skip]
         cmd.args([
-            "-f", "matroska",
+            "-f", "mp4",
             "-c:v", "libx265",
             "-crf", "25",
             "-preset", "medium",
