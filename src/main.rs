@@ -27,6 +27,8 @@ static DRY_RUN: OnceCell<bool> = OnceCell::const_new();
 struct Args {
     #[arg(long)]
     dry_run: bool,
+    #[arg(short, long)]
+    parallel_encoders: Option<usize>,
     media: Vec<PathBuf>,
 }
 
@@ -135,6 +137,14 @@ async fn main() -> Result<()> {
     });
 
     tasks.spawn(async move {
+        let parallel_encoders = args
+            .parallel_encoders
+            .or_else(|| {
+                std::thread::available_parallelism()
+                    .ok()
+                    .map(|ncpu| ((usize::from(ncpu)) / 4).min(1))
+            })
+            .unwrap_or(1);
         PriorityReceiverStream::new(recv)
             .map(move |(path, _prio)| (pb_span_transcoder.clone(), path))
             .then(|(span, path)| async move {
@@ -164,7 +174,7 @@ async fn main() -> Result<()> {
             })
             .buffered(100)
             .filter_map(|opt| async move { opt.ok().flatten() })
-            .par_then(0.25, |(span, video)| async move {
+            .par_then(parallel_encoders, |(span, video)| async move {
                 if DRY_RUN.get().copied().unwrap_or(true) {
                     trace!("Skipping due to dry-run");
                     return anyhow::Ok(None);
