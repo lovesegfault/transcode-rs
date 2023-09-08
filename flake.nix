@@ -80,7 +80,7 @@
         };
 
         ffmpegFullOverlay = final: _: {
-          ffmpeg = prev.ffmpeg.override {
+          ffmpeg = final.ffmpeg.override {
             withBluray = true;
             withCelt = true;
             withCrystalhd = true;
