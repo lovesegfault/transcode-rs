@@ -94,40 +94,44 @@ async fn main() -> Result<()> {
     let mut tasks = JoinSet::new();
 
     tasks.spawn_blocking(move || {
-        args.media.into_iter().map(WalkDir::new).flat_map(IntoIterator::into_iter).for_each(|entry| {
-            let Ok(entry) = entry else {
-                warn!("skipping entry: {entry:?}");
-                return;
-            };
-            let path = entry.path().to_path_buf();
-            if entry.path_is_symlink() {
-                trace!("skipping symlink: '{}'", path.display());
-                return;
-            }
-            if path.is_dir() {
-                trace!("skipping directory: '{}'", path.display());
-                return;
-            }
-            let Some(ext) = path.extension() else {
-                trace!("skipping extensionless path: '{}'", path.display());
-                return;
-            };
-            let video_exts = [
-                "avi", "flv", "m4v", "mkv", "mov", "mp4", "mpg", "ts", "webm", "wmv",
-            ];
-            if !video_exts.iter().any(|&e| e == ext) {
-                trace!(ext=%ext.to_string_lossy(), "skipping non-video file '{}'", path.display());
-                return;
-            }
+        args.media
+            .into_iter()
+            .map(WalkDir::new)
+            .flat_map(IntoIterator::into_iter)
+            .for_each(|entry| {
+                let Ok(entry) = entry else {
+                    warn!("skipping entry: {entry:?}");
+                    return;
+                };
+                let path = entry.path().to_path_buf();
+                if entry.path_is_symlink() {
+                    // trace!("skipping symlink: '{}'", path.display());
+                    return;
+                }
+                if path.is_dir() {
+                    // trace!("skipping directory: '{}'", path.display());
+                    return;
+                }
+                let Some(ext) = path.extension() else {
+                    // trace!("skipping extensionless path: '{}'", path.display());
+                    return;
+                };
+                let video_exts = [
+                    "avi", "flv", "m4v", "mkv", "mov", "mp4", "mpg", "ts", "webm", "wmv",
+                ];
+                if !video_exts.iter().any(|&e| e == ext) {
+                    // trace!(ext=%ext.to_string_lossy(), "skipping non-video file '{}'", path.display());
+                    return;
+                }
 
-            let priority = std::fs::metadata(&path).map(|md| md.len()).unwrap_or(0);
+                let priority = std::fs::metadata(&path).map(|md| md.len()).unwrap_or(0);
 
-            if let Err(e) = send.try_send(path, priority) {
-                error!("skipped file due to channel error: {e:?}");
-                return;
-            };
-            pb_span_finder.pb_inc_length(1);
-        });
+                if let Err(e) = send.try_send(path, priority) {
+                    error!("skipped file due to channel error: {e:?}");
+                    return;
+                };
+                pb_span_finder.pb_inc_length(1);
+            });
     });
 
     tasks.spawn(async move {
@@ -215,9 +219,13 @@ async fn main() -> Result<()> {
                 let transcoded =
                     TempFile::from_existing(transcoded_path, async_tempfile::Ownership::Owned)
                         .await
-                        .context("wrap transcoded in tempfile");
+                        .context("wrap transcoded in tempfile")?;
 
-                transcoded.map(|ts| Some((span, video, ts)))
+                info!(
+                    "Successfully transcoded: {}",
+                    transcoded.file_path().display()
+                );
+                Ok(Some((span, video, transcoded)))
             })
             .filter_map(
                 |res: Result<Option<(Span, VideoFile, TempFile)>>| async move {
@@ -267,7 +275,7 @@ async fn main() -> Result<()> {
                 }
             })
             .par_for_each(None, |(span, original, transcode)| async move {
-                debug!(
+                info!(
                     original=%original.path.display(),
                     transcode=%transcode.file_path().display(),
                     "replacing original with transcode"
@@ -432,7 +440,7 @@ impl VideoFile {
                     .into_std()
                     .await;
 
-                trace!("starting ffmpeg transcode");
+                trace!("starting");
                 let mut child = cmd
                     .stdin(std::process::Stdio::null())
                     .stdout(stdout)
