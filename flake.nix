@@ -6,10 +6,12 @@
     };
     crane = {
       url = "github:ipetkov/crane";
-      inputs.flake-compat.follows = "flake-compat";
-      inputs.flake-utils.follows = "utils";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.rust-overlay.follows = "rust";
+      inputs = {
+        flake-compat.follows = "flake-compat";
+        flake-utils.follows = "utils";
+        nixpkgs.follows = "nixpkgs";
+        rust-overlay.follows = "rust";
+      };
     };
     flake-compat = {
       url = "github:edolstra/flake-compat";
@@ -18,15 +20,19 @@
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     pre-commit-hooks = {
       url = "github:cachix/pre-commit-hooks.nix";
-      inputs.flake-compat.follows = "flake-compat";
-      inputs.flake-utils.follows = "utils";
-      inputs.nixpkgs-stable.follows = "nixpkgs";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs = {
+        flake-compat.follows = "flake-compat";
+        flake-utils.follows = "utils";
+        nixpkgs-stable.follows = "nixpkgs";
+        nixpkgs.follows = "nixpkgs";
+      };
     };
     rust = {
       url = "github:oxalica/rust-overlay";
-      inputs.flake-utils.follows = "utils";
-      inputs.nixpkgs.follows = "nixpkgs";
+      inputs = {
+        flake-utils.follows = "utils";
+        nixpkgs.follows = "nixpkgs";
+      };
     };
     utils.url = "github:numtide/flake-utils";
   };
@@ -83,7 +89,6 @@
           ffmpeg = prev.ffmpeg.override {
             withBluray = true;
             withCelt = true;
-            withCrystalhd = true;
             withFdkAac = true;
             withGlslang = !final.stdenv.isDarwin;
             withGsm = true;
