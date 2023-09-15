@@ -301,7 +301,9 @@ async fn main() -> Result<()> {
                 );
                 match tokio::fs::copy(&transcode.file_path(), &final_path).await {
                     Ok(_) => {
-                        tokio::fs::remove_file(&original.path).await.ok();
+                        if final_path != original.path {
+                            tokio::fs::remove_file(&original.path).await.ok();
+                        }
                     }
                     Err(e) => {
                         error!("Failed to copy transcoded file: {e:?}");
