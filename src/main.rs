@@ -192,8 +192,13 @@ async fn main() -> Result<()> {
                 loop {
                     // wait for file to show up initially
                     if !transcoded_path.exists() {
-                        if start_time.elapsed() > Duration::from_secs(5) {
+                        if start_time.elapsed() > Duration::from_secs(60) {
                             // this is way too long, something isn't right, avoid infinite loops
+                            transcode_task.abort();
+                            tokio::fs::remove_file(&transcoded_path).await.ok();
+                            tokio::fs::remove_file(&transcoded_path.with_extension("log"))
+                                .await
+                                .ok();
                             anyhow::bail!(
                                 "Transcode file never showed up: '{}'",
                                 transcoded_path.display()
