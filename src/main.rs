@@ -190,6 +190,9 @@ async fn main() -> Result<()> {
                     video.transcode_x265("/tmp").instrument(span.clone()).await;
 
                 loop {
+                    if transcode_task.is_finished() {
+                        break;
+                    }
                     // wait for file to show up initially
                     if !transcoded_path.exists() {
                         if start_time.elapsed() > Duration::from_secs(60) {
@@ -222,9 +225,6 @@ async fn main() -> Result<()> {
                             .await
                             .ok();
                         return Ok(None);
-                    }
-                    if transcode_task.is_finished() {
-                        break;
                     }
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
