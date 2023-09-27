@@ -257,9 +257,9 @@ async fn main() -> Result<()> {
                 },
             )
             .par_then_unordered(None, |(span, original, transcode)| async move {
-                let (transcode_codec, transcode_frames) = VideoFile::new(transcode.file_path())
+                let transcode_codec = VideoFile::new(transcode.file_path())
                     .await
-                    .map(|vf| (vf.codec, vf.frames))
+                    .map(|vf| (vf.codec))
                     .context("get transcode info")?;
 
                 if transcode_codec != ffmpeg::codec::Id::HEVC {
@@ -267,18 +267,6 @@ async fn main() -> Result<()> {
                         "Transcode was '{transcode_codec:?}' not HEVC: '{}'",
                         transcode.file_path().display()
                     );
-                }
-
-                let frame_diff_threshold = ((original.frames as f64) * 0.1) as u64;
-                let frame_diff = original.frames.saturating_sub(transcode_frames);
-                if frame_diff > frame_diff_threshold {
-                    warn!(
-                        original = original.frames,
-                        transcode = transcode_frames,
-                        "Ignoring transcode due to frame count difference > 1%"
-                    );
-                    span.pb_inc(1);
-                    return Ok(None);
                 }
 
                 Ok(Some((span, original, transcode)))
@@ -363,40 +351,31 @@ impl<I: Send, P: Ord + Send> Stream for PriorityReceiverStream<I, P> {
 struct VideoFile {
     path: PathBuf,
     codec: ffmpeg::codec::Id,
-    frames: u64,
 }
 
 impl VideoFile {
     pub async fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
 
-        let (path, codec, frames) = tokio::task::spawn_blocking(move || {
+        let (path, codec) = tokio::task::spawn_blocking(move || {
             let ctx = ffmpeg::format::input(&path).context("ffmpeg input")?;
 
             let Some(video_stream) = ctx.streams().best(ffmpeg::media::Type::Video) else {
                 return anyhow::Ok(None);
             };
 
-            let frames = video_stream.frames();
-            anyhow::ensure!(frames > 0, "Non-natural frame count, rejecting file");
-            let frames = frames as u64;
-
             let codec = ffmpeg::codec::context::Context::from_parameters(video_stream.parameters())
                 .context("codec context from parameters")?;
             let codec = codec.id();
 
-            Ok(Some((path, codec, frames)))
+            Ok(Some((path, codec)))
         })
         .await
         .context("spawn ffmpeg format analysis")?
         .context("ffmpeg analysis")?
         .context("no video stream in file")?;
 
-        Ok(Self {
-            path,
-            codec,
-            frames,
-        })
+        Ok(Self { path, codec })
     }
 
     #[tracing::instrument(skip_all, fields(path = %self.path.display()))]
