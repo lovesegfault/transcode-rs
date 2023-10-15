@@ -8,11 +8,13 @@ use indicatif::{ProgressState, ProgressStyle};
 use par_stream::prelude::*;
 use std::path::{Path, PathBuf};
 use std::{pin::Pin, time::Duration};
+use tokio::sync::mpsc;
 use tokio::{
     process::Command,
     sync::OnceCell,
     task::{JoinHandle, JoinSet},
 };
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, info_span, trace, warn, Instrument, Span};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -89,11 +91,14 @@ async fn main() -> Result<()> {
 
     let pb_span_transcoder = pb_span.clone();
     let pb_span_finder = pb_span.clone();
+    let pb_span_triager = pb_span.clone();
 
     let _pb_span_entered = pb_span.enter();
 
     let (send, recv) = async_priority_channel::unbounded();
     let mut tasks = JoinSet::new();
+
+    let (send_vifs, recv_vifs) = mpsc::unbounded_channel::<PathBuf>();
 
     tasks.spawn_blocking(move || {
         args.media
@@ -126,13 +131,43 @@ async fn main() -> Result<()> {
                     return;
                 }
 
+                send_vifs
+                    .send(path)
+                    .map_err(|e| {
+                        error!("failed to submit vif: {e:?}");
+                    })
+                    .ok();
+                pb_span_finder.pb_inc_length(1);
+            });
+    });
+
+    tasks.spawn(async move {
+        let recv = UnboundedReceiverStream::new(recv_vifs);
+        recv.map(move |path| (send.clone(), pb_span_triager.clone(), path))
+            .par_for_each(None, |(send, span, path)| async move {
+                let Ok(video) = VideoFile::new(&path).await.map_err(|e| {
+                    span.pb_inc(1);
+                    error!(path = %path.display(), "failed to get video info: {e:?}");
+                }) else {
+                    return;
+                };
+
+                use ffmpeg::codec::Id;
+                match video.codec {
+                    Id::AV1 | Id::HEVC => {
+                        debug!(path=%path.display(), "skipping {:?} video", video.codec);
+                        span.pb_inc(1);
+                        return;
+                    }
+                    _ => {
+                        info!(path=%path.display(), "enqueuing {:?} video", video.codec);
+                    }
+                };
                 let priority = std::fs::metadata(&path).map(|md| md.len()).unwrap_or(0);
 
                 if let Err(e) = send.try_send(path, priority) {
                     error!("skipped file due to channel error: {e:?}");
-                    return;
                 };
-                pb_span_finder.pb_inc_length(1);
             });
     });
 
@@ -171,8 +206,8 @@ async fn main() -> Result<()> {
 
                     Some((span, video))
                 })
+                .await
             })
-            .buffered(100000)
             .filter_map(|opt| async move { opt.ok().flatten() })
             .par_then(parallel_encoders, |(span, video)| async move {
                 if DRY_RUN.get().copied().unwrap_or(true) {
