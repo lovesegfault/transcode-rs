@@ -232,7 +232,6 @@
           clippy = pkgs.callPackage (buildExpr craneLib.cargoClippy) {
             extraAttrs.cargoClippyExtraArgs = "--all-targets";
           };
-          doc = pkgs.callPackage (buildExpr craneLib.cargoDoc) { };
           rustfmt = pkgs.callPackage (buildExpr craneLib.cargoFmt) { };
 
           pre-commit = pre-commit-hooks.lib.${buildPlatform.system}.run {
