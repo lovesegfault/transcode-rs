@@ -172,7 +172,7 @@ async fn main() -> Result<()> {
                     Some((span, video))
                 })
             })
-            .buffered(100)
+            .buffered(100000)
             .filter_map(|opt| async move { opt.ok().flatten() })
             .par_then(parallel_encoders, |(span, video)| async move {
                 if DRY_RUN.get().copied().unwrap_or(true) {
