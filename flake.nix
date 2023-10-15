@@ -144,6 +144,8 @@
         commonExpr = args: with args; ({
           src = craneLib.cleanCargoSource (craneLib.path ./.);
 
+          strictDeps = true;
+
           nativeBuildInputs = [
             pkg-config
             llvmPackages_latest.clang
