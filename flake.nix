@@ -6,12 +6,7 @@
     };
     crane = {
       url = "github:ipetkov/crane";
-      inputs = {
-        flake-compat.follows = "flake-compat";
-        flake-utils.follows = "utils";
-        nixpkgs.follows = "nixpkgs";
-        rust-overlay.follows = "rust";
-      };
+      inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-compat = {
       url = "github:edolstra/flake-compat";
@@ -199,6 +194,7 @@
         packages = {
           default = self.packages.${buildPlatform.system}.transcoders;
           transcoders = pkgs.callPackage (buildExpr craneLib.buildPackage) { };
+        } // lib.optionalAttrs (hostPlatform.system == skylakePkgs.stdenv.system) {
           transcodersSkylake = skylakePkgs.callPackage (buildExpr craneLib.buildPackage) { };
         };
 
