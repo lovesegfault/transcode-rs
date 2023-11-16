@@ -68,20 +68,14 @@
               svt-av1 = pipe prev.svt-av1 [ applyHost applyGraphite ];
             };
 
-        skylakeOverlay = optimizedOverlayForHost {
-          hostCFlags = [
-            "-march=skylake"
-            "-mabm"
-            "--param=l1-cache-line-size=64"
-            "--param=l1-cache-size=32"
-            "--param=l2-cache-size=8192"
-          ];
+        x86-64-v3Opt = optimizedOverlayForHost {
+          hostCFlags = [ "-march=x86-64-v3" ];
           hostGoFlags.GOAMD64 = "v3";
-          hostRustflags = [ "-Ctarget-cpu=skylake" ];
+          hostRustflags = [ "-Ctarget-cpu=x86-64-v3" ];
         };
 
-        ffmpegFullOverlay = final: prev: {
-          ffmpeg = prev.ffmpeg.override {
+        ffmpegConfig = final: prev: {
+          ffmpeg = prev.ffmpeg_6-headless.override {
             withBluray = true;
             withCelt = true;
             withFdkAac = true;
@@ -106,23 +100,17 @@
 
         overlays = [
           rust.overlays.default
-          (final: _: {
-            ffmpeg = final.ffmpeg_6-headless;
-          })
-          ffmpegFullOverlay
+          ffmpegConfig
         ];
 
         pkgs = import nixpkgs {
-          inherit localSystem overlays config;
+          inherit localSystem config;
           # NOTE: Edit this to cross-compile, e.g.
           # crossSystem = "aarch64-darwin"
           # crossSystem = lib.systems.examples.aarch64-multiplatform;
           crossSystem = localSystem;
-        };
-        skylakePkgs = import nixpkgs {
-          inherit localSystem config;
-          crossSystem = "x86_64-linux";
-          overlays = overlays ++ [ skylakeOverlay ffmpegFullOverlay ];
+          overlays = overlays
+            ++ (lib.optional (localSystem == "x86_64-linux") x86-64-v3Opt);
         };
 
         inherit (pkgs.stdenv) buildPlatform hostPlatform;
@@ -153,10 +141,6 @@
             libiconv
             darwin.apple_sdk.frameworks.Security
           ]);
-
-          propagatedBuildInputs = [
-            ffmpeg
-          ];
 
           FFMPEG_PATH = "${ffmpeg}/bin/ffmpeg";
           FFPROBE_PATH = "${ffmpeg}/bin/ffprobe";
@@ -196,8 +180,6 @@
         packages = {
           default = self.packages.${buildPlatform.system}.transcoders;
           transcoders = pkgs.callPackage (buildExpr craneLib.buildPackage) { };
-        } // lib.optionalAttrs (hostPlatform.system == skylakePkgs.stdenv.system) {
-          transcodersSkylake = skylakePkgs.callPackage (buildExpr craneLib.buildPackage) { };
         };
 
         inherit pkgs;
@@ -210,6 +192,7 @@
             , nixpkgs-fmt
             , statix
             , rust-analyzer
+            , cargo-machete
             }:
             (callPackage (buildExpr mkShell) { }).overrideAttrs (env: {
               cargoArtifacts = null;
@@ -219,6 +202,7 @@
                 statix
                 rust-analyzer
                 rustToolchain
+                cargo-machete
               ];
               inherit (self.checks.${buildPlatform.system}.pre-commit) shellHook;
             })
