@@ -65,7 +65,7 @@
             in
             {
               ffmpeg = pipe (prev.ffmpeg.override { withFrei0r = false; }) [ applyHost applyGraphite ];
-              x265 = pipe prev.x265 [ applyHost applyGraphite ];
+              svt-av1 = pipe prev.svt-av1 [ applyHost applyGraphite ];
             };
 
         skylakeOverlay = optimizedOverlayForHost {
@@ -109,6 +109,7 @@
           (final: _: {
             ffmpeg = final.ffmpeg_6-headless;
           })
+          ffmpegFullOverlay
         ];
 
         pkgs = import nixpkgs {
@@ -158,6 +159,7 @@
           ];
 
           FFMPEG_PATH = "${ffmpeg}/bin/ffmpeg";
+          FFPROBE_PATH = "${ffmpeg}/bin/ffprobe";
           LIBCLANG_PATH = "${llvmPackages_latest.libclang.lib}/lib";
 
           CARGO_BUILD_TARGET = rustTarget;
