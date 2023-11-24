@@ -154,7 +154,7 @@ async fn main() -> Result<()> {
 
                 use ffmpeg::codec::Id;
                 match video.codec {
-                    Id::AV1 | Id::HEVC => {
+                    Id::AV1 => {
                         debug!(path=%path.display(), "skipping {:?} video", video.codec);
                         span.pb_inc(1);
                         return;
@@ -194,7 +194,7 @@ async fn main() -> Result<()> {
 
                     use ffmpeg::codec::Id;
                     match video.codec {
-                        Id::AV1 | Id::HEVC => {
+                        Id::AV1 => {
                             debug!(path=%path.display(), "skipping {:?} video", video.codec);
                             span.pb_inc(1);
                             return None;
@@ -218,11 +218,18 @@ async fn main() -> Result<()> {
                     .await
                     .context("read original metadata")?
                     .len();
-                let transcode_threshold = (original_size as f64) * TRANSCODE_THRESHOLD;
+
+                let hack_thres = if video.codec == ffmpeg::codec::Id::HEVC {
+                    0.85
+                } else {
+                    TRANSCODE_THRESHOLD
+                };
+
+                let transcode_threshold = (original_size as f64) * hack_thres;
 
                 let start_time = tokio::time::Instant::now();
                 let (transcoded_path, transcode_task) =
-                    video.transcode_x265("/tmp").instrument(span.clone()).await;
+                    video.transcode_av1("/tmp").instrument(span.clone()).await;
 
                 loop {
                     if transcode_task.is_finished() {
@@ -297,9 +304,9 @@ async fn main() -> Result<()> {
                     .map(|vf| (vf.codec))
                     .context("get transcode info")?;
 
-                if transcode_codec != ffmpeg::codec::Id::HEVC {
+                if transcode_codec != ffmpeg::codec::Id::AV1 {
                     anyhow::bail!(
-                        "Transcode was '{transcode_codec:?}' not HEVC: '{}'",
+                        "Transcode was '{transcode_codec:?}' not AV1: '{}'",
                         transcode.file_path().display()
                     );
                 }
@@ -414,7 +421,7 @@ impl VideoFile {
     }
 
     #[tracing::instrument(skip_all, fields(path = %self.path.display()))]
-    pub async fn transcode_x265(
+    pub async fn transcode_av1(
         &self,
         out_dir: impl AsRef<Path>,
     ) -> (PathBuf, JoinHandle<Result<()>>) {
@@ -437,9 +444,10 @@ impl VideoFile {
         #[rustfmt::skip]
         cmd.args([
             "-f", "mp4",
-            "-c:v", "libx265",
-            "-crf", "25",
-            "-preset", "medium",
+            "-c:v", "libsvtav1",
+            "-crf", "35",
+            "-preset", "5",
+            "-svtav1-params", "tune=0:film-grain=8",
             "-c:a", "copy",
             "-c:s", "copy"
         ]);
