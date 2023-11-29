@@ -1008,10 +1008,10 @@ impl<P: AsPath + Send> VideoFile<P> {
             .filter(|s| s.codec_type.as_deref() == Some("subtitle"))
             .count();
         if audio_stream_count > 1 {
-            warn!(path=%path.as_path().display(), "video has multiple audio streams, audio transcode selection may be imperfect");
+            warn!("video has multiple audio streams, audio transcode selection may be imperfect");
         }
         if audio_stream_count + video_stream_count + subtitle_stream_count != stream_count {
-            warn!(path=%path.as_path().display(), "video has streams of unknown type");
+            warn!("video has streams of unknown type");
         }
 
         let Some(primary_video_stream) = probe
