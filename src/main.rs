@@ -991,29 +991,6 @@ impl<P: AsPath + Send> VideoFile<P> {
         })
         .await??;
 
-        let stream_count = probe.streams.len();
-        let video_stream_count = probe
-            .streams
-            .iter()
-            .filter(|s| s.codec_type.as_deref() == Some("video"))
-            .count();
-        let audio_stream_count = probe
-            .streams
-            .iter()
-            .filter(|s| s.codec_type.as_deref() == Some("audio"))
-            .count();
-        let subtitle_stream_count = probe
-            .streams
-            .iter()
-            .filter(|s| s.codec_type.as_deref() == Some("subtitle"))
-            .count();
-        if audio_stream_count > 1 {
-            warn!("video has multiple audio streams, audio transcode selection may be imperfect");
-        }
-        if audio_stream_count + video_stream_count + subtitle_stream_count != stream_count {
-            warn!("video has streams of unknown type");
-        }
-
         let Some(primary_video_stream) = probe
             .streams
             .iter()
