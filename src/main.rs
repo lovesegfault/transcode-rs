@@ -359,7 +359,7 @@ fn find_video_files(
             }
             continue;
         };
-        if !video_exts.iter().any(|&e| e == ext) {
+        if !video_exts.iter().any(|&e| e == ext.to_ascii_lowercase()) {
             if let Err(e) = nonvideo_out.send(path.to_path_buf()) {
                 error!(path=%path.display(), "failed to submit non-video file: {e:?}");
             }
