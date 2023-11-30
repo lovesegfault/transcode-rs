@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
                 "elapsed",
                 |state: &ProgressState, writer: &mut dyn std::fmt::Write| {
                     writer
-                        .write_str(&format!("{}s", state.elapsed().as_secs()))
+                        .write_str(&format!("{}s", humantime::format_duration(state.elapsed())))
                         .ok();
                 },
             ),
