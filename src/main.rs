@@ -57,9 +57,9 @@ struct Config {
     #[arg(long)]
     dry_run: bool,
 
-    /// Path to the DRI device used for VAAPI acceleration in video decoding.
-    #[arg(long)]
-    vaapi_device: Option<PathBuf>,
+    /// Use hardware acceleration to transcode video streams
+    #[arg(long, value_enum, default_value_t=Hwaccel::None)]
+    hwaccel: Hwaccel,
 
     /// The desired file-size change after compression, expressed as a percentage.
     ///
@@ -124,6 +124,35 @@ struct Config {
 
     /// Directory to look for video files to transcode.
     video_dir: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum FileAction {
+    /// Move the file
+    Move,
+    /// Delete the file
+    Delete,
+    /// Skip (ignore) the file
+    Skip,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, strum::Display)]
+#[strum(serialize_all = "lowercase")]
+enum Hwaccel {
+    /// Do not use any hardware acceleration
+    None,
+    /// Automatically select the hardware acceleration method
+    Auto,
+    /// Use VDPAU (Video Decode and Presentation API for Unix) hardware acceleration
+    Vdpau,
+    /// Use DXVA2 (DirectX Video Acceleration) hardware acceleration
+    Dxva2,
+    /// Use D3D11VA (DirectX Video Acceleration) hardware acceleration
+    D3d11va,
+    /// Use VAAPI (Video Acceleration API) hardware acceleration
+    Vaapi,
+    /// Use the Intel QuickSync Video acceleration for video transcoding
+    Qsv,
 }
 
 #[cfg_attr(doc, aquamarine::aquamarine)]
@@ -284,16 +313,6 @@ impl State {
     fn new(config: Config, pb_span: Span) -> Self {
         Self(Arc::new(StateInner { config, pb_span }))
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-enum FileAction {
-    /// Move the file
-    Move,
-    /// Delete the file
-    Delete,
-    /// Skip (ignore) the file
-    Skip,
 }
 
 impl Config {
@@ -709,6 +728,7 @@ async fn transcode_video_files_v2(
                 VideoCodec::AV1,
                 AudioCodec::Aac,
                 crf,
+                state.config.hwaccel,
             )?;
             let mut ffmpeg_stdin = tokio::process::ChildStdin::from_std(
                 ffmpeg
@@ -1049,11 +1069,13 @@ impl<P: AsPath + Send> VideoFile<P> {
         vcodec: VideoCodec,
         acodec: AudioCodec,
         crf: u8,
+        hwaccel: Hwaccel,
     ) -> Result<FfmpegChild> {
         let mut transcoder = FfmpegCommand::new_with_path(env!("FFMPEG_PATH"));
         transcoder
             .arg("-y")
             .args(["-threads", "0"])
+            .hwaccel(&hwaccel.to_string())
             .arg("-i")
             .arg(self.path())
             .format("mp4")
