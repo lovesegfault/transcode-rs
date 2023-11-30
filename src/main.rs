@@ -637,8 +637,7 @@ async fn transcode_video_files_v2(
         mut ffmpeg: FfmpegChild,
         span: Span,
     ) -> Result<()> {
-        let template = "{span_child_prefix} {span_name} '{path}' crf={crf} fps={fps} frame={frame} progress={progress} {wide_msg} {elapsed}"
-        ;
+        let template = "{span_child_prefix} {span_name} '{path}' crf={crf} fps={fps} frame={frame} progress={progress} {wide_msg} {elapsed}";
 
         ffmpeg
             .iter()
@@ -694,7 +693,12 @@ async fn transcode_video_files_v2(
                             .with_key(
                                 "elapsed",
                                 |state: &ProgressState, writer: &mut dyn std::fmt::Write| {
-                                    write!(writer, "{}s", state.elapsed().as_secs()).ok();
+                                    write!(
+                                        writer,
+                                        "{}s",
+                                        humantime::format_duration(state.elapsed())
+                                    )
+                                    .ok();
                                 },
                             ),
                     );
