@@ -1,4 +1,4 @@
-mod priority_channel;
+pub mod priority_channel;
 
 use std::{
     ops::Deref,
@@ -22,7 +22,7 @@ use futures::{StreamExt, TryStreamExt};
 use indicatif::{ProgressState, ProgressStyle};
 use par_stream::ParStreamExt;
 use thread_priority::{
-    set_thread_priority_and_policy, NormalThreadSchedulePolicy, ThreadPriority,
+    set_thread_priority_and_policy, NormalThreadSchedulePolicy, ThreadId, ThreadPriority,
     ThreadSchedulePolicy,
 };
 use tikv_jemallocator::Jemalloc;
@@ -236,11 +236,11 @@ async fn main() -> Result<()> {
 
     let mut tasks = JoinSet::new();
 
-    let (find_video_files_in, find_video_files_out) = unbounded_channel();
+    let (find_video_files_in, find_video_files_out) = priority_channel();
     let (find_dirs_in, find_dirs_out) = unbounded_channel();
     let (find_symlinks_in, find_symlinks_out) = unbounded_channel();
     let (find_nonvideo_files_in, find_nonvideo_files_out) = unbounded_channel();
-    let (analyze_video_files_in, analyze_video_files_out) = priority_channel();
+    let (analyze_video_files_in, analyze_video_files_out) = unbounded_channel();
     let (analyze_broken_video_files_in, analyze_broken_video_files_out) = unbounded_channel();
     let (transcode_video_files_in, transcode_video_files_out) = unbounded_channel();
     let (transcode_failed_files_in, transcode_failed_files_out) = unbounded_channel();
@@ -340,7 +340,7 @@ impl Config {
 
 #[tracing::instrument(skip_all)]
 fn find_video_files(
-    video_files_out: UnboundedSender<PathBuf>,
+    video_files_out: PrioritySender<PathBuf, u64>,
     nonvideo_out: UnboundedSender<PathBuf>,
     symlink_out: UnboundedSender<PathBuf>,
     dir_out: UnboundedSender<PathBuf>,
@@ -386,7 +386,15 @@ fn find_video_files(
         }
 
         trace!(path=%path.display(), "found video file");
-        if let Err(e) = video_files_out.send(path.to_path_buf()) {
+        let metadata = match std::fs::metadata(&path) {
+            Ok(md) => md,
+            Err(e) => {
+                error!(path=%path.display(), "failed to get metadata for video file: {e:?}");
+                continue;
+            }
+        };
+        let file_size = metadata.len();
+        if let Err(e) = video_files_out.blocking_send(path.to_path_buf(), file_size) {
             error!(path=%path.display(), "failed to submit video file: {e:?}");
         } else {
             state.pb_span.pb_inc_length(1);
@@ -524,15 +532,15 @@ async fn handle_nonvideo_files(
 }
 
 async fn analyze_video_files(
-    video_files_in: UnboundedReceiver<PathBuf>,
-    transcode_out: PrioritySender<VideoFile<PathBuf>, u64>,
+    video_files_in: PriorityReceiver<PathBuf, u64>,
+    transcode_out: UnboundedSender<VideoFile<PathBuf>>,
     broken_out: UnboundedSender<PathBuf>,
     state: State,
 ) -> Result<()> {
     #[tracing::instrument(skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
     async fn analyze_video_file(
         path: PathBuf,
-        transcode_out: PrioritySender<VideoFile<PathBuf>, u64>,
+        transcode_out: UnboundedSender<VideoFile<PathBuf>>,
         broken_out: UnboundedSender<PathBuf>,
         state: State,
     ) -> Result<()> {
@@ -544,8 +552,7 @@ async fn analyze_video_files(
                     state.pb_span.pb_inc(1);
                     return Ok(());
                 }
-                let prio = vif.size;
-                transcode_out.send(vif, prio).await?;
+                transcode_out.send(vif)?;
             }
             Err(e) => {
                 error!("broken video file: {e:?}");
@@ -554,8 +561,9 @@ async fn analyze_video_files(
         }
         Ok(())
     }
-    UnboundedReceiverStream::new(video_files_in)
-        .map(move |path| {
+    video_files_in
+        .into_stream()
+        .map(move |(path, _prio)| {
             (
                 path,
                 transcode_out.clone(),
@@ -624,7 +632,7 @@ async fn handle_broken_video_files(
 }
 
 async fn transcode_video_files_v2(
-    video_files_in: PriorityReceiver<VideoFile<PathBuf>, u64>,
+    video_files_in: UnboundedReceiver<VideoFile<PathBuf>>,
     transcode_out: UnboundedSender<(VideoFile<PathBuf>, TempFile)>,
     failed_out: UnboundedSender<VideoFile<PathBuf>>,
     state: State,
@@ -709,8 +717,8 @@ async fn transcode_video_files_v2(
         Ok(())
     }
 
-    let mut stream = video_files_in.into_stream();
-    'next_video: while let Some((original, _)) = stream.next().await {
+    let mut stream = UnboundedReceiverStream::new(video_files_in);
+    'next_video: while let Some(original) = stream.next().await {
         info!("transcoding '{}'", original.path().display());
         let original_size = original.size;
         let max_size = if original.video_codec == VideoCodec::Hevc {
@@ -1112,7 +1120,7 @@ impl<P: AsPath + Send> VideoFile<P> {
             .spawn()
             .with_context(|| format!("spawn ffmpeg transcode of '{}'", self.path().display()))?;
 
-        let pid = ffmpeg.as_inner().id() as u64;
+        let pid = ffmpeg.as_inner().id() as ThreadId;
         let prio = ThreadPriority::Crossplatform(10u8.try_into().unwrap());
         set_thread_priority_and_policy(
             pid,

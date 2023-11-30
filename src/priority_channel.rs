@@ -132,6 +132,19 @@ impl<T: Hash + Eq, P: Ord> PrioritySender<T, P> {
         }
         Ok(())
     }
+
+    pub fn blocking_send(&self, msg: T, prio: P) -> Result<(), SendError<T>> {
+        if self.inner.is_closed() {
+            return Err(SendError::Closed(msg));
+        }
+        let mut queue = self.inner.queue.blocking_lock();
+        queue.push(msg, prio);
+        let old_len = self.inner.len.fetch_add(1);
+        if old_len == usize::MAX {
+            panic!("queue overflowed usize::MAX");
+        }
+        Ok(())
+    }
 }
 
 impl<T: Hash + Eq, P: Ord> PriorityReceiver<T, P> {
