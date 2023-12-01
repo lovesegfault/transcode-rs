@@ -205,9 +205,8 @@ async fn main() -> Result<()> {
             .with_key(
                 "elapsed",
                 |state: &ProgressState, writer: &mut dyn std::fmt::Write| {
-                    writer
-                        .write_str(&format!("{}s", humantime::format_duration(state.elapsed())))
-                        .ok();
+                    let elapsed = Duration::from_secs(state.elapsed().as_secs());
+                    write!(writer, "{}", humantime::format_duration(elapsed)).ok();
                 },
             ),
         )
@@ -701,12 +700,8 @@ async fn transcode_video_files_v2(
                             .with_key(
                                 "elapsed",
                                 |state: &ProgressState, writer: &mut dyn std::fmt::Write| {
-                                    write!(
-                                        writer,
-                                        "{}s",
-                                        humantime::format_duration(state.elapsed())
-                                    )
-                                    .ok();
+                                    let elapsed = Duration::from_secs(state.elapsed().as_secs());
+                                    write!(writer, "{}", humantime::format_duration(elapsed)).ok();
                                 },
                             ),
                     );
