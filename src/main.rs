@@ -722,7 +722,7 @@ async fn transcode_video_files_v2(
         info!("transcoding '{}'", original.path().display());
         let original_size = original.size;
         let max_size = if original.video_codec == VideoCodec::Hevc {
-            Percentage::from(0.8) * original_size
+            original_size
         } else {
             (1.0 - state.config.compression_goal) * original_size
         };
