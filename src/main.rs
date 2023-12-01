@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use async_atomic::Atomic;
 use async_tempfile::TempFile;
 use bytesize::ByteSize;
 use clap::Parser;
@@ -243,7 +244,9 @@ async fn main() -> Result<()> {
     let (analyze_broken_video_files_in, analyze_broken_video_files_out) = unbounded_channel();
     let (transcode_video_files_in, transcode_video_files_out) = unbounded_channel();
     let (transcode_failed_files_in, transcode_failed_files_out) = unbounded_channel();
+    let ingestion_done_signal = Arc::new(Atomic::new(false));
 
+    let _signal_move = ingestion_done_signal.clone();
     let _state_move = state.clone();
     tasks.spawn_blocking(move || {
         find_video_files(
@@ -251,6 +254,7 @@ async fn main() -> Result<()> {
             find_nonvideo_files_in,
             find_symlinks_in,
             find_dirs_in,
+            _signal_move,
             _state_move,
         );
         Ok(())
@@ -271,10 +275,11 @@ async fn main() -> Result<()> {
         analyze_broken_video_files_out,
         state.clone(),
     ));
-    tasks.spawn(transcode_video_files_v2(
+    tasks.spawn(transcode_video_files(
         analyze_video_files_out,
         transcode_video_files_in,
         transcode_failed_files_in,
+        ingestion_done_signal,
         state.clone(),
     ));
     tasks.spawn(handle_failed_transcodes(
@@ -343,6 +348,7 @@ fn find_video_files(
     nonvideo_out: UnboundedSender<PathBuf>,
     symlink_out: UnboundedSender<PathBuf>,
     dir_out: UnboundedSender<PathBuf>,
+    ingestion_done_signal: Arc<Atomic<bool>>,
     state: State,
 ) {
     let video_exts = [
@@ -399,6 +405,7 @@ fn find_video_files(
             state.pb_span.pb_inc_length(1);
         }
     }
+    ingestion_done_signal.store(true);
 }
 
 async fn handle_symlinks(symlinks_in: UnboundedReceiver<PathBuf>, state: State) -> Result<()> {
@@ -630,10 +637,11 @@ async fn handle_broken_video_files(
         .await
 }
 
-async fn transcode_video_files_v2(
+async fn transcode_video_files(
     video_files_in: UnboundedReceiver<VideoFile<PathBuf>>,
     transcode_out: UnboundedSender<(VideoFile<PathBuf>, TempFile)>,
     failed_out: UnboundedSender<VideoFile<PathBuf>>,
+    ingestion_done_signal: Arc<Atomic<bool>>,
     state: State,
 ) -> Result<()> {
     #[tracing::instrument(skip_all, parent=span)]
@@ -713,6 +721,12 @@ async fn transcode_video_files_v2(
     }
 
     let mut stream = UnboundedReceiverStream::new(video_files_in);
+
+    ingestion_done_signal
+        .subscribe_arc()
+        .wait(|ingestion_done| ingestion_done)
+        .await;
+
     'next_video: while let Some(original) = stream.next().await {
         info!("transcoding '{}'", original.path().display());
         let original_size = original.size;
