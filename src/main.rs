@@ -577,7 +577,7 @@ async fn analyze_video_files(
                 state.clone(),
             )
         })
-        .par_then_unordered(None, |(path, transcode_out, broken_out, state)| {
+        .par_then(None, |(path, transcode_out, broken_out, state)| {
             analyze_video_file(path, transcode_out, broken_out, state)
         })
         .try_collect()
