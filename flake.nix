@@ -171,15 +171,15 @@
       in
       {
         apps = {
-          default = self.apps.${buildPlatform.system}.transcoders;
-          transcoders = utils.lib.mkApp {
-            drv = self.packages.${buildPlatform.system}.transcoders;
+          default = self.apps.${buildPlatform.system}.transcode-rs;
+          transcode-rs = utils.lib.mkApp {
+            drv = self.packages.${buildPlatform.system}.transcode-rs;
           };
         };
 
         packages = {
-          default = self.packages.${buildPlatform.system}.transcoders;
-          transcoders = pkgs.callPackage (buildExpr craneLib.buildPackage) { };
+          default = self.packages.${buildPlatform.system}.transcode-rs;
+          transcode-rs = pkgs.callPackage (buildExpr craneLib.buildPackage) { };
         };
 
         inherit pkgs;
