@@ -341,7 +341,7 @@ impl Config {
     }
 }
 
-#[tracing::instrument(skip_all)]
+#[tracing::instrument(name = "find_videos", skip_all)]
 fn find_video_files(
     video_files_out: PrioritySender<PathBuf, u64>,
     nonvideo_out: UnboundedSender<PathBuf>,
@@ -542,7 +542,7 @@ async fn analyze_video_files(
     broken_out: UnboundedSender<PathBuf>,
     state: State,
 ) -> Result<()> {
-    #[tracing::instrument(skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
+    #[tracing::instrument(name="analyze", skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
     async fn analyze_video_file(
         path: PathBuf,
         transcode_out: UnboundedSender<VideoFile<PathBuf>>,
@@ -587,7 +587,7 @@ async fn handle_broken_video_files(
     broken_in: UnboundedReceiver<PathBuf>,
     state: State,
 ) -> Result<()> {
-    #[tracing::instrument(skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
+    #[tracing::instrument(name="handle_broken", skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
     async fn handle_broken_video_file(path: PathBuf, state: State) -> Result<()> {
         let dry_run = state.config.dry_run;
         if !path.is_file() {
@@ -808,7 +808,7 @@ async fn handle_failed_transcodes(
     failed_videos_in: UnboundedReceiver<VideoFile<PathBuf>>,
     state: State,
 ) -> Result<()> {
-    #[tracing::instrument(skip_all, fields(path=%video.path().display()), parent=state.pb_span.clone())]
+    #[tracing::instrument(name="handle_failed", skip_all, fields(path=%video.path().display()), parent=state.pb_span.clone())]
     async fn handle_failed_transcode(video: VideoFile<PathBuf>, state: State) -> Result<()> {
         let dry_run = state.config.dry_run;
         let path = video.path;
@@ -862,7 +862,7 @@ async fn finalize_transcodes(
     transcoded_videos_in: UnboundedReceiver<(VideoFile<PathBuf>, TempFile)>,
     state: State,
 ) -> Result<()> {
-    #[tracing::instrument(skip_all, fields(path=%original.path().display()), parent=state.pb_span.clone())]
+    #[tracing::instrument(name="finalize", skip_all, fields(path=%original.path().display()), parent=state.pb_span.clone())]
     async fn finalize_transcode(
         original: VideoFile<PathBuf>,
         transcode: TempFile,
