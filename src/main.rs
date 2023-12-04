@@ -654,7 +654,7 @@ fn transcode_progress(
     mut ffmpeg: FfmpegChild,
     span: Span,
 ) -> Result<()> {
-    let template = "{span_child_prefix} {span_name} crf={crf} fps={fps} frame={frame} progress={progress} {wide_msg} {elapsed}";
+    let template = "{span_child_prefix} {span_name} crf={crf} fps={fps} frame={frame} progress={progress} size={size} {wide_msg} {elapsed}";
 
     ffmpeg
         .iter()
@@ -673,6 +673,8 @@ fn transcode_progress(
                 } else {
                     "unknown".to_string()
                 };
+                let size = ByteSize::kb(p.size_kb as u64).to_string_as(true);
+
                 Span::current().pb_set_style(
                     &ProgressStyle::with_template(template)
                         .unwrap()
@@ -701,6 +703,12 @@ fn transcode_progress(
                             },
                         )
                         .with_key(
+                            "size",
+                            move |_: &ProgressState, writer: &mut dyn std::fmt::Write| {
+                                write!(writer, "{size}").ok();
+                            },
+                        )
+                        .with_key(
                             "elapsed",
                             |state: &ProgressState, writer: &mut dyn std::fmt::Write| {
                                 let elapsed = Duration::from_secs(state.elapsed().as_secs());
@@ -717,7 +725,16 @@ fn transcode_progress(
     Ok(())
 }
 
-#[tracing::instrument(name="transcode", skip_all, fields(original=%original.path().display()), parent=state.pb_span.clone())]
+#[tracing::instrument(
+    name="transcode",
+    skip_all,
+    fields(
+        original=%original.path().display(),
+        size=ByteSize::b(original.size).to_string_as(true),
+        max_size,
+    ),
+    parent=state.pb_span.clone()
+)]
 async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> Result<TempFile> {
     info!("transcoding '{}'", original.path().display());
     let original_size = original.size;
@@ -726,6 +743,7 @@ async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> R
     } else {
         ((1.0 - state.config.compression_goal) * (original_size as f64)).round() as u64
     };
+    Span::current().record("max_size", max_size);
 
     'next_crf: for crf in state.config.min_crf..64 {
         let dest = match TempFile::new_in(&state.config.working_dir).await {
@@ -748,7 +766,6 @@ async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> R
                 .context("ffmpeg child has no stdin handle")?,
         )?;
 
-        let _original_path = original.path().to_path_buf();
         let _nb_frames = original.nb_frames;
         let _span = Span::current();
         let progress_task =
