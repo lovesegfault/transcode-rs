@@ -717,6 +717,8 @@ async fn transcode_video_files(
                 _ => {}
             });
 
+        ffmpeg.wait().context("wait on ffmpeg child")?;
+
         Ok(())
     }
 
