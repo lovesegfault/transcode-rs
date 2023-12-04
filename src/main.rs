@@ -28,10 +28,10 @@ use thread_priority::{
 use tikv_jemallocator::Jemalloc;
 use tokio::{
     io::AsyncWriteExt,
-    sync::mpsc::{channel, unbounded_channel, Sender, UnboundedSender},
+    sync::mpsc::{unbounded_channel, UnboundedSender},
     task::{spawn_blocking, JoinSet},
 };
-use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, info_span, trace, warn, Span};
 use tracing_indicatif::{span_ext::IndicatifSpanExt, IndicatifLayer};
 use tracing_subscriber::{
@@ -239,7 +239,7 @@ async fn main() -> Result<()> {
     let (find_dirs_in, find_dirs_out) = unbounded_channel();
     let (find_symlinks_in, find_symlinks_out) = unbounded_channel();
     let (find_nonvideo_files_in, find_nonvideo_files_out) = unbounded_channel();
-    let (analyze_video_files_in, analyze_video_files_out) = channel(100);
+    let (analyze_video_files_in, analyze_video_files_out) = unbounded_channel();
     let (analyze_broken_video_files_in, analyze_broken_video_files_out) = unbounded_channel();
     let (transcode_video_files_in, transcode_video_files_out) = unbounded_channel();
     let (transcode_failed_files_in, transcode_failed_files_out) = unbounded_channel();
@@ -271,7 +271,7 @@ async fn main() -> Result<()> {
                     _state.clone(),
                 )
             })
-            .par_then(None, |(path, transcode_out, broken_out, state)| {
+            .par_then(2, |(path, transcode_out, broken_out, state)| {
                 analyze_video_file(path, transcode_out, broken_out, state)
             })
             .try_collect()
@@ -316,7 +316,7 @@ async fn main() -> Result<()> {
 
     let _state = state.clone();
     tasks.spawn(async move {
-        let mut stream = ReceiverStream::new(analyze_video_files_out);
+        let mut stream = UnboundedReceiverStream::new(analyze_video_files_out);
 
         ingestion_done_signal
             .subscribe_arc()
@@ -583,7 +583,7 @@ async fn handle_nonvideo_file(path: PathBuf, state: State) -> Result<()> {
 #[tracing::instrument(name="analyze", skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
 async fn analyze_video_file(
     path: PathBuf,
-    transcode_out: Sender<VideoFile<PathBuf>>,
+    transcode_out: UnboundedSender<VideoFile<PathBuf>>,
     broken_out: UnboundedSender<PathBuf>,
     state: State,
 ) -> Result<()> {
@@ -595,7 +595,7 @@ async fn analyze_video_file(
                 state.pb_span.pb_inc(1);
                 return Ok(());
             }
-            transcode_out.send(vif).await?;
+            transcode_out.send(vif)?;
         }
         Err(e) => {
             error!("broken video file: {e:?}");
