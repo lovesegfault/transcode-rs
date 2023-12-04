@@ -28,7 +28,7 @@ use thread_priority::{
 use tikv_jemallocator::Jemalloc;
 use tokio::{
     io::AsyncWriteExt,
-    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    sync::mpsc::{unbounded_channel, UnboundedSender},
     task::{spawn_blocking, JoinSet},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -39,7 +39,7 @@ use tracing_subscriber::{
 };
 use walkdir::WalkDir;
 
-use crate::priority_channel::{priority_channel, PriorityReceiver, PrioritySender};
+use crate::priority_channel::{priority_channel, PrioritySender};
 
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -258,37 +258,105 @@ async fn main() -> Result<()> {
         );
         Ok(())
     });
-    tasks.spawn(analyze_video_files(
-        find_video_files_out,
-        analyze_video_files_in,
-        analyze_broken_video_files_in,
-        state.clone(),
-    ));
-    tasks.spawn(handle_nonvideo_files(
-        find_nonvideo_files_out,
-        state.clone(),
-    ));
-    tasks.spawn(handle_symlinks(find_symlinks_out, state.clone()));
-    tasks.spawn(handle_dirs(find_dirs_out, state.clone()));
-    tasks.spawn(handle_broken_video_files(
-        analyze_broken_video_files_out,
-        state.clone(),
-    ));
-    tasks.spawn(transcode_video_files(
-        analyze_video_files_out,
-        transcode_video_files_in,
-        transcode_failed_files_in,
-        ingestion_done_signal,
-        state.clone(),
-    ));
-    tasks.spawn(handle_failed_transcodes(
-        transcode_failed_files_out,
-        state.clone(),
-    ));
-    tasks.spawn(finalize_transcodes(
-        transcode_video_files_out,
-        state.clone(),
-    ));
+
+    let _state = state.clone();
+    tasks.spawn(async move {
+        find_video_files_out
+            .into_stream()
+            .map(move |(path, _prio)| {
+                (
+                    path,
+                    analyze_video_files_in.clone(),
+                    analyze_broken_video_files_in.clone(),
+                    _state.clone(),
+                )
+            })
+            .par_then(None, |(path, transcode_out, broken_out, state)| {
+                analyze_video_file(path, transcode_out, broken_out, state)
+            })
+            .try_collect()
+            .await
+    });
+
+    let _state = state.clone();
+    tasks.spawn(async move {
+        UnboundedReceiverStream::new(find_nonvideo_files_out)
+            .map(move |path| (path, _state.clone()))
+            .par_then_unordered(None, |(path, state)| handle_nonvideo_file(path, state))
+            .try_collect()
+            .await
+    });
+
+    let _state = state.clone();
+    tasks.spawn(async move {
+        UnboundedReceiverStream::new(find_symlinks_out)
+            .map(move |path| (path, _state.clone()))
+            .par_then_unordered(None, |(path, state)| handle_symlink(path, state))
+            .try_collect()
+            .await
+    });
+
+    let _state = state.clone();
+    tasks.spawn(async move {
+        UnboundedReceiverStream::new(find_dirs_out)
+            .map(move |path| (path, _state.clone()))
+            .par_then_unordered(None, |(path, state)| handle_dir(path, state))
+            .try_collect()
+            .await
+    });
+
+    let _state = state.clone();
+    tasks.spawn(async move {
+        UnboundedReceiverStream::new(analyze_broken_video_files_out)
+            .map(move |path| (path, _state.clone()))
+            .par_then_unordered(None, |(path, state)| handle_broken_video_file(path, state))
+            .try_collect()
+            .await
+    });
+
+    let _state = state.clone();
+    tasks.spawn(async move {
+        let mut stream = UnboundedReceiverStream::new(analyze_video_files_out);
+
+        ingestion_done_signal
+            .subscribe_arc()
+            .wait(|ingestion_done| ingestion_done)
+            .await;
+
+        while let Some(original) = stream.next().await {
+            match transcode_video_file(&original, &_state).await {
+                Ok(transcode) => {
+                    transcode_video_files_in.send((original, transcode))?;
+                }
+                Err(e) => {
+                    error!(path=%original.path().display(), "transcode failed: {e:?}");
+                    transcode_failed_files_in.send(original)?;
+                }
+            };
+        }
+
+        Ok(())
+    });
+
+    let _state = state.clone();
+    tasks.spawn(async move {
+        UnboundedReceiverStream::new(transcode_failed_files_out)
+            .map(move |video| (video, _state.clone()))
+            .par_then_unordered(None, |(video, state)| handle_failed_transcode(video, state))
+            .try_collect()
+            .await
+    });
+
+    let _state = state.clone();
+    tasks.spawn(async move {
+        UnboundedReceiverStream::new(transcode_video_files_out)
+            .map(move |(original, transcode)| (original, transcode, _state.clone()))
+            .par_then_unordered(None, |(original, transcode, state)| {
+                finalize_transcode(original, transcode, state)
+            })
+            .try_collect()
+            .await
+    });
 
     while let Some(res) = tasks.join_next().await {
         res??;
@@ -407,233 +475,176 @@ fn find_video_files(
     ingestion_done_signal.store(true);
 }
 
-async fn handle_symlinks(symlinks_in: UnboundedReceiver<PathBuf>, state: State) -> Result<()> {
-    #[tracing::instrument(skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
-    async fn handle_symlink(path: PathBuf, state: State) -> Result<()> {
-        if !path.is_symlink() {
-            anyhow::bail!("received non-symlink path while handling symlinks");
-        }
-        if !state.config.remove_symlinks {
-            trace!("skipped symlink");
+#[tracing::instrument(skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
+async fn handle_symlink(path: PathBuf, state: State) -> Result<()> {
+    if !path.is_symlink() {
+        anyhow::bail!("received non-symlink path while handling symlinks");
+    }
+    if !state.config.remove_symlinks {
+        trace!("skipped symlink");
+        return Ok(());
+    }
+    if !state.config.dry_run {
+        if let Err(e) = tokio::fs::remove_file(&path).await {
+            error!("failed to remove symlink: {e:?}");
             return Ok(());
         }
-        if !state.config.dry_run {
-            if let Err(e) = tokio::fs::remove_file(&path).await {
-                error!("failed to remove symlink: {e:?}");
-                return Ok(());
-            }
-        }
-        info!("removed symlink");
-        Ok(())
     }
-    UnboundedReceiverStream::new(symlinks_in)
-        .map(move |path| (path, state.clone()))
-        .par_then_unordered(None, |(path, state)| handle_symlink(path, state))
-        .try_collect()
-        .await
+    info!("removed symlink");
+    Ok(())
 }
 
-async fn handle_dirs(dirs_in: UnboundedReceiver<PathBuf>, state: State) -> Result<()> {
-    #[tracing::instrument(skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
-    async fn handle_dir(path: PathBuf, state: State) -> Result<()> {
-        if !path.is_dir() {
-            anyhow::bail!("received non-dir path while handling dirs");
-        }
-        if !state.config.remove_empty_dirs {
-            trace!("skipped dir");
-            return Ok(());
-        }
-        let mut read_dir = match tokio::fs::read_dir(&path).await {
-            Ok(r) => r,
-            Err(e) => {
-                error!("failed to read dir: {e:?}");
-                return Ok(());
-            }
-        };
-        let first_entry = match read_dir.next_entry().await {
-            Ok(e) => e,
-            Err(e) => {
-                error!("failed to read dir entry: {e:?}");
-                return Ok(());
-            }
-        };
-        let dir_is_empty = first_entry.is_none();
-        drop(first_entry);
-        drop(read_dir);
-
-        if !dir_is_empty {
-            trace!("skipping non-empty dir");
-            return Ok(());
-        }
-
-        if !state.config.dry_run {
-            if let Err(e) = tokio::fs::remove_dir(&path).await {
-                error!("failed to remove empty dir: {e:?}");
-                return Ok(());
-            };
-        }
-
-        info!("removed empty dir");
-        Ok(())
+#[tracing::instrument(skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
+async fn handle_dir(path: PathBuf, state: State) -> Result<()> {
+    if !path.is_dir() {
+        anyhow::bail!("received non-dir path while handling dirs");
     }
-    UnboundedReceiverStream::new(dirs_in)
-        .map(move |path| (path, state.clone()))
-        .par_then_unordered(None, |(path, state)| handle_dir(path, state))
-        .try_collect()
-        .await
+    if !state.config.remove_empty_dirs {
+        trace!("skipped dir");
+        return Ok(());
+    }
+    let mut read_dir = match tokio::fs::read_dir(&path).await {
+        Ok(r) => r,
+        Err(e) => {
+            error!("failed to read dir: {e:?}");
+            return Ok(());
+        }
+    };
+    let first_entry = match read_dir.next_entry().await {
+        Ok(e) => e,
+        Err(e) => {
+            error!("failed to read dir entry: {e:?}");
+            return Ok(());
+        }
+    };
+    let dir_is_empty = first_entry.is_none();
+    drop(first_entry);
+    drop(read_dir);
+
+    if !dir_is_empty {
+        trace!("skipping non-empty dir");
+        return Ok(());
+    }
+
+    if !state.config.dry_run {
+        if let Err(e) = tokio::fs::remove_dir(&path).await {
+            error!("failed to remove empty dir: {e:?}");
+            return Ok(());
+        };
+    }
+
+    info!("removed empty dir");
+    Ok(())
 }
 
-async fn handle_nonvideo_files(
-    nonvideo_in: UnboundedReceiver<PathBuf>,
-    state: State,
-) -> Result<()> {
-    #[tracing::instrument(skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
-    async fn handle_nonvideo_file(path: PathBuf, state: State) -> Result<()> {
-        let dry_run = state.config.dry_run;
-        if !path.is_file() {
-            anyhow::bail!("received non-file path when handling nonvideo files");
+#[tracing::instrument(skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
+async fn handle_nonvideo_file(path: PathBuf, state: State) -> Result<()> {
+    let dry_run = state.config.dry_run;
+    if !path.is_file() {
+        anyhow::bail!("received non-file path when handling nonvideo files");
+    }
+    match state.config.non_video_action {
+        FileAction::Skip => trace!("skipped non-video file"),
+        FileAction::Delete => {
+            if !dry_run {
+                if let Err(e) = tokio::fs::remove_file(&path).await {
+                    error!("failed to delete non-video file: {e:?}");
+                    return Ok(());
+                }
+            }
+            info!("deleted non-video file");
         }
-        match state.config.non_video_action {
-            FileAction::Skip => trace!("skipped non-video file"),
-            FileAction::Delete => {
-                if !dry_run {
-                    if let Err(e) = tokio::fs::remove_file(&path).await {
-                        error!("failed to delete non-video file: {e:?}");
+        FileAction::Move => {
+            let nonvideo_dir = state
+                .config
+                .non_video_dir
+                .as_ref()
+                .context("get nonvideo dir")?;
+            if !dry_run {
+                let move_res =
+                    move_subtree(&state.config.video_dir, &path, None, nonvideo_dir).await;
+                let _dest_path = match move_res {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!(
+                            destination=%nonvideo_dir.display(),
+                            "failed to move nonvideo file: {e:?}"
+                        );
                         return Ok(());
                     }
-                }
-                info!("deleted non-video file");
+                };
             }
-            FileAction::Move => {
-                let nonvideo_dir = state
-                    .config
-                    .non_video_dir
-                    .as_ref()
-                    .context("get nonvideo dir")?;
-                if !dry_run {
-                    let move_res =
-                        move_subtree(&state.config.video_dir, &path, None, nonvideo_dir).await;
-                    let _dest_path = match move_res {
-                        Ok(p) => p,
-                        Err(e) => {
-                            error!(
-                                destination=%nonvideo_dir.display(),
-                                "failed to move nonvideo file: {e:?}"
-                            );
-                            return Ok(());
-                        }
-                    };
-                }
-                info!("moved non-video file to {}", nonvideo_dir.display());
-            }
+            info!("moved non-video file to {}", nonvideo_dir.display());
         }
-        Ok(())
     }
-    UnboundedReceiverStream::new(nonvideo_in)
-        .map(move |path| (path, state.clone()))
-        .par_then_unordered(None, |(path, state)| handle_nonvideo_file(path, state))
-        .try_collect()
-        .await
+    Ok(())
 }
 
-async fn analyze_video_files(
-    video_files_in: PriorityReceiver<PathBuf, u64>,
+#[tracing::instrument(name="analyze", skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
+async fn analyze_video_file(
+    path: PathBuf,
     transcode_out: UnboundedSender<VideoFile<PathBuf>>,
     broken_out: UnboundedSender<PathBuf>,
     state: State,
 ) -> Result<()> {
-    #[tracing::instrument(name="analyze", skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
-    async fn analyze_video_file(
-        path: PathBuf,
-        transcode_out: UnboundedSender<VideoFile<PathBuf>>,
-        broken_out: UnboundedSender<PathBuf>,
-        state: State,
-    ) -> Result<()> {
-        match VideoFile::new(path.clone()).await {
-            Ok(vif) => {
-                debug!(codec=?vif.video_codec, "successfully analyzed video file");
-                if vif.video_codec == VideoCodec::AV1 {
-                    debug!("skipping AV1 video file");
-                    state.pb_span.pb_inc(1);
-                    return Ok(());
-                }
-                transcode_out.send(vif)?;
+    match VideoFile::new(path.clone()).await {
+        Ok(vif) => {
+            debug!(codec=?vif.video_codec, "successfully analyzed video file");
+            if vif.video_codec == VideoCodec::AV1 {
+                debug!("skipping AV1 video file");
+                state.pb_span.pb_inc(1);
+                return Ok(());
             }
-            Err(e) => {
-                error!("broken video file: {e:?}");
-                broken_out.send(path)?;
-            }
+            transcode_out.send(vif)?;
         }
-        Ok(())
+        Err(e) => {
+            error!("broken video file: {e:?}");
+            broken_out.send(path)?;
+        }
     }
-    video_files_in
-        .into_stream()
-        .map(move |(path, _prio)| {
-            (
-                path,
-                transcode_out.clone(),
-                broken_out.clone(),
-                state.clone(),
-            )
-        })
-        .par_then(None, |(path, transcode_out, broken_out, state)| {
-            analyze_video_file(path, transcode_out, broken_out, state)
-        })
-        .try_collect()
-        .await
+    Ok(())
 }
 
-async fn handle_broken_video_files(
-    broken_in: UnboundedReceiver<PathBuf>,
-    state: State,
-) -> Result<()> {
-    #[tracing::instrument(name="handle_broken", skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
-    async fn handle_broken_video_file(path: PathBuf, state: State) -> Result<()> {
-        let dry_run = state.config.dry_run;
-        if !path.is_file() {
-            anyhow::bail!("received non-file path when handling broken video files");
+#[tracing::instrument(name="handle_broken", skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]
+async fn handle_broken_video_file(path: PathBuf, state: State) -> Result<()> {
+    let dry_run = state.config.dry_run;
+    if !path.is_file() {
+        anyhow::bail!("received non-file path when handling broken video files");
+    }
+    match state.config.broken_video_action {
+        FileAction::Skip => trace!("skipped broken video file"),
+        FileAction::Delete => {
+            if !dry_run {
+                if let Err(e) = tokio::fs::remove_file(&path).await {
+                    error!("failed to delete broken video file: {e:?}");
+                    return Ok(());
+                }
+            }
+            info!("deleted broken video file");
         }
-        match state.config.broken_video_action {
-            FileAction::Skip => trace!("skipped broken video file"),
-            FileAction::Delete => {
-                if !dry_run {
-                    if let Err(e) = tokio::fs::remove_file(&path).await {
-                        error!("failed to delete broken video file: {e:?}");
+        FileAction::Move => {
+            let broken_dir = state
+                .config
+                .broken_video_dir
+                .as_ref()
+                .context("get broken video dir")?;
+            if !dry_run {
+                let move_res = move_subtree(&state.config.video_dir, &path, None, broken_dir).await;
+                let _dest_path = match move_res {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!(
+                            destination=%broken_dir.display(),
+                            "failed to move broken video file: {e:?}"
+                        );
                         return Ok(());
                     }
-                }
-                info!("deleted broken video file");
+                };
             }
-            FileAction::Move => {
-                let broken_dir = state
-                    .config
-                    .broken_video_dir
-                    .as_ref()
-                    .context("get broken video dir")?;
-                if !dry_run {
-                    let move_res =
-                        move_subtree(&state.config.video_dir, &path, None, broken_dir).await;
-                    let _dest_path = match move_res {
-                        Ok(p) => p,
-                        Err(e) => {
-                            error!(
-                                destination=%broken_dir.display(),
-                                "failed to move broken video file: {e:?}"
-                            );
-                            return Ok(());
-                        }
-                    };
-                }
-                info!("moved broken video file to {}", broken_dir.display());
-            }
+            info!("moved broken video file to {}", broken_dir.display());
         }
-        Ok(())
     }
-    UnboundedReceiverStream::new(broken_in)
-        .map(move |path| (path, state.clone()))
-        .par_then_unordered(None, |(path, state)| handle_broken_video_file(path, state))
-        .try_collect()
-        .await
+    Ok(())
 }
 
 #[tracing::instrument(name="progress", skip_all, parent=span)]
@@ -776,179 +787,128 @@ async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> R
     anyhow::bail!("no crf was able to produce a video within bounds");
 }
 
-async fn transcode_video_files(
-    video_files_in: UnboundedReceiver<VideoFile<PathBuf>>,
-    transcode_out: UnboundedSender<(VideoFile<PathBuf>, TempFile)>,
-    failed_out: UnboundedSender<VideoFile<PathBuf>>,
-    ingestion_done_signal: Arc<Atomic<bool>>,
-    state: State,
-) -> Result<()> {
-    let mut stream = UnboundedReceiverStream::new(video_files_in);
-
-    ingestion_done_signal
-        .subscribe_arc()
-        .wait(|ingestion_done| ingestion_done)
-        .await;
-
-    while let Some(original) = stream.next().await {
-        match transcode_video_file(&original, &state).await {
-            Ok(transcode) => {
-                transcode_out.send((original, transcode))?;
+#[tracing::instrument(name="handle_failed", skip_all, fields(path=%video.path().display()), parent=state.pb_span.clone())]
+async fn handle_failed_transcode(video: VideoFile<PathBuf>, state: State) -> Result<()> {
+    let dry_run = state.config.dry_run;
+    let path = video.path;
+    if !path.is_file() {
+        anyhow::bail!("received non-file path when handling failed transcodes");
+    }
+    match state.config.failed_transcode_action {
+        FileAction::Skip => trace!("skipped failed transcode"),
+        FileAction::Delete => {
+            if !dry_run {
+                if let Err(e) = tokio::fs::remove_file(&path).await {
+                    error!("failed to delete failed transcode video file: {e:?}");
+                    return Ok(());
+                }
             }
-            Err(e) => {
-                error!(path=%original.path().display(), "transcode failed: {e:?}");
-                failed_out.send(original)?;
+            info!("deleted failed transcode video file");
+        }
+        FileAction::Move => {
+            let failed_dir = state
+                .config
+                .failed_transcode_dir
+                .as_ref()
+                .context("get failed transcode dir")?;
+            if !dry_run {
+                let move_res = move_subtree(&state.config.video_dir, &path, None, failed_dir).await;
+                let _dest_path = match move_res {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!(
+                            destination=%failed_dir.display(),
+                            "failed to move failed transcode file: {e:?}"
+                        );
+                        return Ok(());
+                    }
+                };
             }
-        };
+            info!("moved failed transcode file to {}", failed_dir.display());
+        }
     }
     Ok(())
 }
 
-async fn handle_failed_transcodes(
-    failed_videos_in: UnboundedReceiver<VideoFile<PathBuf>>,
+#[tracing::instrument(name="finalize", skip_all, fields(path=%original.path().display()), parent=state.pb_span.clone())]
+async fn finalize_transcode(
+    original: VideoFile<PathBuf>,
+    transcode: TempFile,
     state: State,
 ) -> Result<()> {
-    #[tracing::instrument(name="handle_failed", skip_all, fields(path=%video.path().display()), parent=state.pb_span.clone())]
-    async fn handle_failed_transcode(video: VideoFile<PathBuf>, state: State) -> Result<()> {
-        let dry_run = state.config.dry_run;
-        let path = video.path;
-        if !path.is_file() {
-            anyhow::bail!("received non-file path when handling failed transcodes");
-        }
-        match state.config.failed_transcode_action {
-            FileAction::Skip => trace!("skipped failed transcode"),
-            FileAction::Delete => {
-                if !dry_run {
-                    if let Err(e) = tokio::fs::remove_file(&path).await {
-                        error!("failed to delete failed transcode video file: {e:?}");
-                        return Ok(());
-                    }
-                }
-                info!("deleted failed transcode video file");
-            }
-            FileAction::Move => {
-                let failed_dir = state
-                    .config
-                    .failed_transcode_dir
-                    .as_ref()
-                    .context("get failed transcode dir")?;
-                if !dry_run {
-                    let move_res =
-                        move_subtree(&state.config.video_dir, &path, None, failed_dir).await;
-                    let _dest_path = match move_res {
-                        Ok(p) => p,
-                        Err(e) => {
-                            error!(
-                                destination=%failed_dir.display(),
-                                "failed to move failed transcode file: {e:?}"
-                            );
-                            return Ok(());
-                        }
-                    };
-                }
-                info!("moved failed transcode file to {}", failed_dir.display());
-            }
-        }
-        Ok(())
-    }
-    UnboundedReceiverStream::new(failed_videos_in)
-        .map(move |video| (video, state.clone()))
-        .par_then_unordered(None, |(video, state)| handle_failed_transcode(video, state))
-        .try_collect()
-        .await
-}
-
-async fn finalize_transcodes(
-    transcoded_videos_in: UnboundedReceiver<(VideoFile<PathBuf>, TempFile)>,
-    state: State,
-) -> Result<()> {
-    #[tracing::instrument(name="finalize", skip_all, fields(path=%original.path().display()), parent=state.pb_span.clone())]
-    async fn finalize_transcode(
-        original: VideoFile<PathBuf>,
-        transcode: TempFile,
-        state: State,
-    ) -> Result<()> {
-        let transcode = match VideoFile::new(transcode).await {
-            Ok(v) => v,
-            Err(e) => {
-                error!("failed to analyze transcode: {e:?}");
-                return Ok(());
-            }
-        };
-        if transcode.video_codec != VideoCodec::AV1 {
-            error!(
-                "transcode did not result in an AV1 video stream: {:?}",
-                transcode.video_codec
-            );
+    let transcode = match VideoFile::new(transcode).await {
+        Ok(v) => v,
+        Err(e) => {
+            error!("failed to analyze transcode: {e:?}");
             return Ok(());
         }
-        let shrunk_amount = original.size - transcode.size;
-        let shrunk_percent = ((transcode.size as f64) / (original.size as f64)) * 100.0;
-
-        info!(
-            saved = ByteSize::b(shrunk_amount).to_string_as(true),
-            shrunk = format!("{shrunk_percent:.2}%"),
-            "successfully transcoded"
+    };
+    if transcode.video_codec != VideoCodec::AV1 {
+        error!(
+            "transcode did not result in an AV1 video stream: {:?}",
+            transcode.video_codec
         );
-        let dry_run = state.config.dry_run;
-        match state.config.transcoded_video_action {
-            FileAction::Skip => {
-                drop(transcode);
-                trace!("discarded transcode");
-            }
-            FileAction::Delete => {
-                // Clobber
-                let dest = original.path().with_extension("mp4");
-                if !dry_run {
-                    if let Err(e) = tokio::fs::copy(transcode.path(), &dest).await {
-                        error!(path=%dest.display(), "failed to copy transcode to final destination: {e:?}");
+        return Ok(());
+    }
+    let shrunk_amount = original.size - transcode.size;
+    let shrunk_percent = ((transcode.size as f64) / (original.size as f64)) * 100.0;
+
+    info!(
+        saved = ByteSize::b(shrunk_amount).to_string_as(true),
+        shrunk = format!("{shrunk_percent:.2}%"),
+        "successfully transcoded"
+    );
+    let dry_run = state.config.dry_run;
+    match state.config.transcoded_video_action {
+        FileAction::Skip => {
+            drop(transcode);
+            trace!("discarded transcode");
+        }
+        FileAction::Delete => {
+            // Clobber
+            let dest = original.path().with_extension("mp4");
+            if !dry_run {
+                if let Err(e) = tokio::fs::copy(transcode.path(), &dest).await {
+                    error!(path=%dest.display(), "failed to copy transcode to final destination: {e:?}");
+                    return Ok(());
+                };
+                if original.path() != dest {
+                    if let Err(e) = tokio::fs::remove_file(original.path()).await {
+                        error!("failed to remove original file after transcode: {e:?}");
                         return Ok(());
                     };
-                    if original.path() != dest {
-                        if let Err(e) = tokio::fs::remove_file(original.path()).await {
-                            error!("failed to remove original file after transcode: {e:?}");
-                            return Ok(());
-                        };
-                    }
                 }
-                trace!("clobbered original with transcode");
             }
-            FileAction::Move => {
-                let transcode_dir = state
-                    .config
-                    .transcoded_video_dir
-                    .as_ref()
-                    .context("get transcoded dir")?;
-                if !dry_run {
-                    let move_res = move_subtree(
-                        &state.config.video_dir,
-                        transcode.path(),
-                        Some(original.path()),
-                        transcode_dir,
-                    )
-                    .await;
-                    let dest_path = match move_res {
-                        Ok(p) => p,
-                        Err(e) => {
-                            error!(destination=%transcode_dir.display(), "failed to move transcode: {e:?}");
-                            return Ok(());
-                        }
-                    };
-                    drop(transcode);
-                    info!(path=%dest_path.display(), "moved transcode");
-                }
+            trace!("clobbered original with transcode");
+        }
+        FileAction::Move => {
+            let transcode_dir = state
+                .config
+                .transcoded_video_dir
+                .as_ref()
+                .context("get transcoded dir")?;
+            if !dry_run {
+                let move_res = move_subtree(
+                    &state.config.video_dir,
+                    transcode.path(),
+                    Some(original.path()),
+                    transcode_dir,
+                )
+                .await;
+                let dest_path = match move_res {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!(destination=%transcode_dir.display(), "failed to move transcode: {e:?}");
+                        return Ok(());
+                    }
+                };
+                drop(transcode);
+                info!(path=%dest_path.display(), "moved transcode");
             }
         }
-        state.pb_span.pb_inc(1);
-        Ok(())
     }
-    UnboundedReceiverStream::new(transcoded_videos_in)
-        .map(move |(original, transcode)| (original, transcode, state.clone()))
-        .par_then_unordered(None, |(original, transcode, state)| {
-            finalize_transcode(original, transcode, state)
-        })
-        .try_collect()
-        .await
+    state.pb_span.pb_inc(1);
+    Ok(())
 }
 
 async fn move_subtree(
