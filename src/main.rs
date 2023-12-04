@@ -12,7 +12,6 @@ use async_atomic::Atomic;
 use async_tempfile::TempFile;
 use bytesize::ByteSize;
 use clap::Parser;
-use decimal_percentage::Percentage;
 use derivative::Derivative;
 use ffmpeg_sidecar::{
     child::FfmpegChild,
@@ -65,8 +64,8 @@ struct Config {
     /// The desired file-size change after compression, expressed as a percentage.
     ///
     /// If you wanted 100byte video files to end up with at most 60 bytes, this value would be 40%.
-    #[arg(long, default_value = "0.4")]
-    compression_goal: Percentage,
+    #[arg(long, default_value_t = 0.4)]
+    compression_goal: f64,
 
     /// The minimum constant rate factor (CRF) to use when transcoding.
     ///
@@ -227,7 +226,7 @@ async fn main() -> Result<()> {
         .with(indicatif_layer)
         .init();
 
-    let pb_span = info_span!("progress");
+    let pb_span = info_span!("transcode_rs");
     pb_span.pb_set_style(&ProgressStyle::default_bar());
     pb_span.pb_set_length(1);
     pb_span.pb_start();
@@ -637,6 +636,146 @@ async fn handle_broken_video_files(
         .await
 }
 
+#[tracing::instrument(name="progress", skip_all, parent=span)]
+fn transcode_progress(
+    crf: u8,
+    nb_frames: Option<u64>,
+    mut ffmpeg: FfmpegChild,
+    span: Span,
+) -> Result<()> {
+    let template = "{span_child_prefix} {span_name} crf={crf} fps={fps} frame={frame} progress={progress} {wide_msg} {elapsed}";
+
+    ffmpeg
+        .iter()
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?
+        .for_each(|event| match event {
+            FfmpegEvent::Log(LogLevel::Error | LogLevel::Fatal, msg) => {
+                error!("ffmpeg error: {msg}")
+            }
+            FfmpegEvent::Log(LogLevel::Warning, msg) => warn!("ffmpeg warn: {msg}"),
+            FfmpegEvent::Progress(p) => {
+                let frame = p.frame;
+                let fps = p.fps;
+                let progress = if let Some(nb_frames) = nb_frames {
+                    let percent = ((frame as f64) / (nb_frames as f64)) * 100.0;
+                    format!("{percent:.2}%")
+                } else {
+                    "unknown".to_string()
+                };
+                Span::current().pb_set_style(
+                    &ProgressStyle::with_template(template)
+                        .unwrap()
+                        .with_key(
+                            "crf",
+                            move |_: &ProgressState, writer: &mut dyn std::fmt::Write| {
+                                write!(writer, "{crf}").ok();
+                            },
+                        )
+                        .with_key(
+                            "fps",
+                            move |_: &ProgressState, writer: &mut dyn std::fmt::Write| {
+                                write!(writer, "{fps}").ok();
+                            },
+                        )
+                        .with_key(
+                            "frame",
+                            move |_: &ProgressState, writer: &mut dyn std::fmt::Write| {
+                                write!(writer, "{frame}").ok();
+                            },
+                        )
+                        .with_key(
+                            "progress",
+                            move |_: &ProgressState, writer: &mut dyn std::fmt::Write| {
+                                write!(writer, "{progress}").ok();
+                            },
+                        )
+                        .with_key(
+                            "elapsed",
+                            |state: &ProgressState, writer: &mut dyn std::fmt::Write| {
+                                let elapsed = Duration::from_secs(state.elapsed().as_secs());
+                                write!(writer, "{}", humantime::format_duration(elapsed)).ok();
+                            },
+                        ),
+                );
+            }
+            _ => {}
+        });
+
+    ffmpeg.wait().context("wait on ffmpeg child")?;
+
+    Ok(())
+}
+
+#[tracing::instrument(name="transcode", skip_all, fields(original=%original.path().display()), parent=state.pb_span.clone())]
+async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> Result<TempFile> {
+    info!("transcoding '{}'", original.path().display());
+    let original_size = original.size;
+    let max_size = if original.video_codec == VideoCodec::Hevc {
+        original_size
+    } else {
+        ((1.0 - state.config.compression_goal) * (original_size as f64)).round() as u64
+    };
+
+    'next_crf: for crf in state.config.min_crf..64 {
+        let dest = match TempFile::new_in(&state.config.working_dir).await {
+            Ok(tmp) => tmp,
+            Err(e) => {
+                error!(working_dir=%state.config.working_dir.display(), "failed to create transcode file: {e:?}");
+                continue;
+            }
+        };
+        let mut ffmpeg = original.spawn_transcode(
+            dest.file_path(),
+            VideoCodec::AV1,
+            AudioCodec::Aac,
+            crf,
+            state.config.hwaccel,
+        )?;
+        let mut ffmpeg_stdin = tokio::process::ChildStdin::from_std(
+            ffmpeg
+                .take_stdin()
+                .context("ffmpeg child has no stdin handle")?,
+        )?;
+
+        let _original_path = original.path().to_path_buf();
+        let _nb_frames = original.nb_frames;
+        let _span = Span::current();
+        let progress_task =
+            tokio::task::spawn_blocking(move || transcode_progress(crf, _nb_frames, ffmpeg, _span));
+
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if progress_task.is_finished() {
+                break;
+            }
+            let transcode_size = tokio::fs::metadata(dest.file_path())
+                .await
+                .context("get metadata for transcode")?
+                .len();
+            if transcode_size > max_size {
+                warn!(
+                    path=%original.path().display(),
+                    original_size=ByteSize::b(original_size).to_string_as(true),
+                    max_size=ByteSize::b(max_size).to_string_as(true),
+                    crf,
+                    "transcode failed compression goal, increasing crf"
+                );
+                ffmpeg_stdin.write_all(b"q").await?;
+                progress_task.await.ok();
+                drop(dest);
+                continue 'next_crf;
+            }
+        }
+
+        progress_task.await??;
+
+        info!(path=%original.path().display(), crf, "transcoded successfully");
+        return Ok(dest);
+    }
+
+    anyhow::bail!("no crf was able to produce a video within bounds");
+}
+
 async fn transcode_video_files(
     video_files_in: UnboundedReceiver<VideoFile<PathBuf>>,
     transcode_out: UnboundedSender<(VideoFile<PathBuf>, TempFile)>,
@@ -644,84 +783,6 @@ async fn transcode_video_files(
     ingestion_done_signal: Arc<Atomic<bool>>,
     state: State,
 ) -> Result<()> {
-    #[tracing::instrument(skip_all, parent=span)]
-    fn transcode_progress(
-        original_path: &Path,
-        crf: u8,
-        nb_frames: Option<u64>,
-        mut ffmpeg: FfmpegChild,
-        span: Span,
-    ) -> Result<()> {
-        let template = "{span_child_prefix} {span_name} '{path}' crf={crf} fps={fps} frame={frame} progress={progress} {wide_msg} {elapsed}";
-
-        ffmpeg
-            .iter()
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?
-            .map(|e| (e, original_path.to_path_buf()))
-            .for_each(|(event, original_path)| match event {
-                FfmpegEvent::Log(LogLevel::Error | LogLevel::Fatal, msg) => {
-                    error!("ffmpeg error: {msg}")
-                }
-                FfmpegEvent::Log(LogLevel::Warning, msg) => warn!("ffmpeg warn: {msg}"),
-                FfmpegEvent::Progress(p) => {
-                    let frame = p.frame;
-                    let fps = p.fps;
-                    let progress = if let Some(nb_frames) = nb_frames {
-                        let percent = ((frame as f64) / (nb_frames as f64)) * 100.0;
-                        format!("{percent:.2}%")
-                    } else {
-                        "unknown".to_string()
-                    };
-                    Span::current().pb_set_style(
-                        &ProgressStyle::with_template(template)
-                            .unwrap()
-                            .with_key(
-                                "path",
-                                move |_: &ProgressState, writer: &mut dyn std::fmt::Write| {
-                                    write!(writer, "{}", original_path.display()).ok();
-                                },
-                            )
-                            .with_key(
-                                "crf",
-                                move |_: &ProgressState, writer: &mut dyn std::fmt::Write| {
-                                    write!(writer, "{crf}").ok();
-                                },
-                            )
-                            .with_key(
-                                "fps",
-                                move |_: &ProgressState, writer: &mut dyn std::fmt::Write| {
-                                    write!(writer, "{fps}").ok();
-                                },
-                            )
-                            .with_key(
-                                "frame",
-                                move |_: &ProgressState, writer: &mut dyn std::fmt::Write| {
-                                    write!(writer, "{frame}").ok();
-                                },
-                            )
-                            .with_key(
-                                "progress",
-                                move |_: &ProgressState, writer: &mut dyn std::fmt::Write| {
-                                    write!(writer, "{progress}").ok();
-                                },
-                            )
-                            .with_key(
-                                "elapsed",
-                                |state: &ProgressState, writer: &mut dyn std::fmt::Write| {
-                                    let elapsed = Duration::from_secs(state.elapsed().as_secs());
-                                    write!(writer, "{}", humantime::format_duration(elapsed)).ok();
-                                },
-                            ),
-                    );
-                }
-                _ => {}
-            });
-
-        ffmpeg.wait().context("wait on ffmpeg child")?;
-
-        Ok(())
-    }
-
     let mut stream = UnboundedReceiverStream::new(video_files_in);
 
     ingestion_done_signal
@@ -729,77 +790,16 @@ async fn transcode_video_files(
         .wait(|ingestion_done| ingestion_done)
         .await;
 
-    'next_video: while let Some(original) = stream.next().await {
-        info!("transcoding '{}'", original.path().display());
-        let original_size = original.size;
-        let max_size = if original.video_codec == VideoCodec::Hevc {
-            original_size
-        } else {
-            (1.0 - state.config.compression_goal) * original_size
-        };
-
-        'next_crf: for crf in state.config.min_crf..64 {
-            let dest = match TempFile::new_in(&state.config.working_dir).await {
-                Ok(tmp) => tmp,
-                Err(e) => {
-                    error!(working_dir=%state.config.working_dir.display(), "failed to create transcode file: {e:?}");
-                    continue;
-                }
-            };
-            let mut ffmpeg = original.spawn_transcode(
-                dest.file_path(),
-                VideoCodec::AV1,
-                AudioCodec::Aac,
-                crf,
-                state.config.hwaccel,
-            )?;
-            let mut ffmpeg_stdin = tokio::process::ChildStdin::from_std(
-                ffmpeg
-                    .take_stdin()
-                    .context("ffmpeg child has no stdin handle")?,
-            )?;
-
-            let _original_path = original.path().to_path_buf();
-            let _nb_frames = original.nb_frames;
-            let _span = state.pb_span.clone();
-            let progress_task = tokio::task::spawn_blocking(move || {
-                transcode_progress(&_original_path, crf, _nb_frames, ffmpeg, _span)
-            });
-
-            loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                if progress_task.is_finished() {
-                    break;
-                }
-                let transcode_size = tokio::fs::metadata(dest.file_path())
-                    .await
-                    .context("get metadata for transcode")?
-                    .len();
-                if transcode_size > max_size {
-                    warn!(
-                        path=%original.path().display(),
-                        original_size=ByteSize::b(original_size).to_string_as(true),
-                        max_size=ByteSize::b(max_size).to_string_as(true),
-                        crf,
-                        "transcode failed compression goal, increasing crf"
-                    );
-                    ffmpeg_stdin.write_all(b"q").await?;
-                    progress_task.await.ok();
-                    drop(dest);
-                    continue 'next_crf;
-                }
+    while let Some(original) = stream.next().await {
+        match transcode_video_file(&original, &state).await {
+            Ok(transcode) => {
+                transcode_out.send((original, transcode))?;
             }
-
-            if let Err(e) = progress_task.await {
+            Err(e) => {
                 error!(path=%original.path().display(), "transcode failed: {e:?}");
-                drop(dest);
                 failed_out.send(original)?;
-                continue 'next_video;
-            };
-            info!(path=%original.path().display(), crf, "transcoded successfully");
-            transcode_out.send((original, dest))?;
-            continue 'next_video;
-        }
+            }
+        };
     }
     Ok(())
 }
