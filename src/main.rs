@@ -797,6 +797,22 @@ async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> R
 
         progress_task.await??;
 
+        let transcode_size = tokio::fs::metadata(dest.file_path())
+            .await
+            .context("get metadata for transcode")?
+            .len();
+        if transcode_size > max_size {
+            warn!(
+                path=%original.path().display(),
+                original_size=ByteSize::b(original_size).to_string_as(true),
+                max_size=ByteSize::b(max_size).to_string_as(true),
+                crf,
+                "transcode failed compression goal, increasing crf"
+            );
+            drop(dest);
+            continue 'next_crf;
+        }
+
         info!(path=%original.path().display(), crf, "transcoded successfully");
         return Ok(dest);
     }
