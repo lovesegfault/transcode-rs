@@ -897,7 +897,7 @@ async fn finalize_transcode(
         }
         FileAction::Delete => {
             // Clobber
-            let dest = original.path().with_extension("mp4");
+            let dest = original.path().with_extension("mkv");
             if !dry_run {
                 if let Err(e) = tokio::fs::copy(transcode.path(), &dest).await {
                     error!(path=%dest.display(), "failed to copy transcode to final destination: {e:?}");
@@ -1093,8 +1093,7 @@ impl<P: AsPath + Send> VideoFile<P> {
             .hwaccel(&hwaccel.to_string())
             .arg("-i")
             .arg(self.path())
-            .format("mp4")
-            .args(["-movflags", "faststart"])
+            .format("mkv")
             .args(["-c:s", "copy"]);
 
         match (self.video_codec, vcodec) {
