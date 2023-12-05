@@ -1,5 +1,3 @@
-pub mod priority_channel;
-
 use std::{
     ops::Deref,
     path::{Path, PathBuf},
@@ -18,7 +16,7 @@ use ffmpeg_sidecar::{
     command::FfmpegCommand,
     event::{FfmpegEvent, LogLevel},
 };
-use futures::{StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use indicatif::{ProgressState, ProgressStyle};
 use par_stream::ParStreamExt;
 use thread_priority::{
@@ -38,8 +36,6 @@ use tracing_subscriber::{
     filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
 use walkdir::WalkDir;
-
-use crate::priority_channel::{priority_channel, PrioritySender};
 
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -235,11 +231,11 @@ async fn main() -> Result<()> {
 
     let mut tasks = JoinSet::new();
 
-    let (find_video_files_in, find_video_files_out) = priority_channel();
+    let (find_video_files_in, find_video_files_out) = async_priority_channel::unbounded();
     let (find_dirs_in, find_dirs_out) = unbounded_channel();
     let (find_symlinks_in, find_symlinks_out) = unbounded_channel();
     let (find_nonvideo_files_in, find_nonvideo_files_out) = unbounded_channel();
-    let (analyze_video_files_in, analyze_video_files_out) = priority_channel();
+    let (analyze_video_files_in, analyze_video_files_out) = async_priority_channel::unbounded();
     let (analyze_broken_video_files_in, analyze_broken_video_files_out) = unbounded_channel();
     let (transcode_video_files_in, transcode_video_files_out) = unbounded_channel();
     let (transcode_failed_files_in, transcode_failed_files_out) = unbounded_channel();
@@ -261,8 +257,8 @@ async fn main() -> Result<()> {
 
     let _state = state.clone();
     tasks.spawn(async move {
-        find_video_files_out
-            .into_stream()
+        let stream = async_receiver_stream(find_video_files_out);
+        stream
             .map(move |(path, prio)| {
                 (
                     path,
@@ -317,7 +313,7 @@ async fn main() -> Result<()> {
 
     let _state = state.clone();
     tasks.spawn(async move {
-        let mut stream = analyze_video_files_out.into_stream();
+        let mut stream = async_receiver_stream(analyze_video_files_out);
 
         ingestion_done_signal
             .subscribe_arc()
@@ -412,7 +408,7 @@ impl Config {
 
 #[tracing::instrument(name = "find_videos", skip_all)]
 fn find_video_files(
-    video_files_out: PrioritySender<PathBuf, u64>,
+    video_files_out: async_priority_channel::Sender<PathBuf, u64>,
     nonvideo_out: UnboundedSender<PathBuf>,
     symlink_out: UnboundedSender<PathBuf>,
     dir_out: UnboundedSender<PathBuf>,
@@ -467,7 +463,7 @@ fn find_video_files(
             }
         };
         let file_size = metadata.len();
-        if let Err(e) = video_files_out.blocking_send(path.to_path_buf(), file_size) {
+        if let Err(e) = video_files_out.try_send(path.to_path_buf(), file_size) {
             error!(path=%path.display(), "failed to submit video file: {e:?}");
         } else {
             state.pb_span.pb_inc_length(1);
@@ -585,7 +581,7 @@ async fn handle_nonvideo_file(path: PathBuf, state: State) -> Result<()> {
 async fn analyze_video_file(
     path: PathBuf,
     prio: u64,
-    transcode_out: PrioritySender<VideoFile<PathBuf>, u64>,
+    transcode_out: async_priority_channel::Sender<VideoFile<PathBuf>, u64>,
     broken_out: UnboundedSender<PathBuf>,
     state: State,
 ) -> Result<()> {
@@ -1138,4 +1134,15 @@ impl<P: AsPath + Send> VideoFile<P> {
 
         Ok(ffmpeg)
     }
+}
+
+fn async_receiver_stream<T, P: Ord>(
+    chan: async_priority_channel::Receiver<T, P>,
+) -> impl Stream<Item = (T, P)> + Unpin {
+    Box::pin(futures::stream::unfold(chan, |state| async move {
+        match state.recv().await {
+            Ok(val) => Some((val, state)),
+            Err(async_priority_channel::RecvError) => None,
+        }
+    }))
 }
