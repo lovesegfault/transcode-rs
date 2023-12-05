@@ -130,21 +130,17 @@
 
           strictDeps = true;
 
-          nativeBuildInputs = [
-            pkg-config
-            llvmPackages_latest.clang
-          ];
+          nativeBuildInputs = [ pkg-config ];
 
-          buildInputs = [
-            ffmpeg
-          ] ++ (lib.optionals stdenv.hostPlatform.isDarwin [
+          buildInputs = lib.optionals stdenv.hostPlatform.isDarwin [
             libiconv
             darwin.apple_sdk.frameworks.Security
-          ]);
+          ];
+
+          propagatedBuildInputs = [ ffmpeg.bin ];
 
           FFMPEG_PATH = "${ffmpeg}/bin/ffmpeg";
           FFPROBE_PATH = "${ffmpeg}/bin/ffprobe";
-          LIBCLANG_PATH = "${llvmPackages_latest.libclang.lib}/lib";
 
           CARGO_BUILD_TARGET = rustTarget;
           "CARGO_TARGET_${rustTargetEnv}_LINKER" = "${stdenv.cc.targetPrefix}cc";
@@ -158,7 +154,6 @@
           , lib
           , pkg-config
           , ffmpeg
-          , llvmPackages_latest
           , libiconv
           , qemu
           , darwin ? null
