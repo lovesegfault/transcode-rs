@@ -1020,7 +1020,7 @@ impl<P: AsPath + Send> VideoFile<P> {
         let probe = spawn_blocking(move || {
             let config = ffprobe::Config::builder()
                 .ffprobe_bin(env!("FFPROBE_PATH"))
-                .count_frames(true)
+                .count_frames(false)
                 .build();
             ffprobe::ffprobe_config(config, _path_move).context("ffprobe video file")
         })
