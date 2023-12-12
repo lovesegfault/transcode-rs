@@ -105,10 +105,6 @@
 
         pkgs = import nixpkgs {
           inherit localSystem config;
-          # NOTE: Edit this to cross-compile, e.g.
-          # crossSystem = "aarch64-darwin"
-          # crossSystem = lib.systems.examples.aarch64-multiplatform;
-          crossSystem = localSystem;
           overlays = overlays
             ++ (lib.optional (localSystem == "x86_64-linux") x86-64-v3Opt);
         };
@@ -123,46 +119,55 @@
           targets = [ rustTarget ];
         };
 
-        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        craneLib = ((crane.mkLib pkgs).overrideToolchain rustToolchain).overrideScope' (_: _: {
+          inherit (pkgs.pkgsLLVM) stdenv;
+        });
 
-        commonExpr = args: with args; ({
-          src = craneLib.cleanCargoSource (craneLib.path ./.);
+        src = craneLib.cleanCargoSource (craneLib.path ./.);
+
+        buildVars = rec {
+          FFMPEG_PATH = "${pkgs.ffmpeg.bin}/bin/ffmpeg";
+          FFPROBE_PATH = "${pkgs.ffmpeg.bin}/bin/ffprobe";
+
+          CFLAGS = "-flto -fuse-ld=lld"
+            + lib.optionalString pkgs.stdenv.hostPlatform.isx86_64 " -march=x86-64-v3";
+          CXXFLAGS = CFLAGS;
+
+          CARGO_BUILD_TARGET = rustTarget;
+          "CARGO_TARGET_${rustTargetEnv}_LINKER" = "clang";
+          "CARGO_TARGET_${rustTargetEnv}_RUSTFLAGS" = "-Clink-arg=-fuse-ld=lld"
+            + lib.optionalString pkgs.stdenv.hostPlatform.isx86_64 " -Ctarget-cpu=x86-64-v3";
+
+        } // (lib.optionalAttrs (pkgs.stdenv.buildPlatform != pkgs.stdenv.hostPlatform) {
+          "CARGO_TARGET_${rustTargetEnv}_RUNNER" = "qemu-${pkgs.stdenv.hostPlatform.qemuArch}";
+        });
+
+        commonArgs = buildVars // {
+          inherit src;
 
           strictDeps = true;
 
-          nativeBuildInputs = [ pkg-config ];
+          depsBuildBuild = with pkgs; lib.optionals (stdenv.buildPlatform != stdenv.hostPlatform) [
+            qemu
+          ];
 
-          buildInputs = lib.optionals stdenv.hostPlatform.isDarwin [
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            llvmPackages.clangUseLLVM
+            llvmPackages.bintools
+          ];
+
+          buildInputs = with pkgs; lib.optionals stdenv.hostPlatform.isDarwin [
             libiconv
             darwin.apple_sdk.frameworks.Security
           ];
 
-          propagatedBuildInputs = [ ffmpeg.bin ];
+          propagatedBuildInputs = with pkgs; [ ffmpeg.bin ];
+        };
 
-          FFMPEG_PATH = "${ffmpeg}/bin/ffmpeg";
-          FFPROBE_PATH = "${ffmpeg}/bin/ffprobe";
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-          CARGO_BUILD_TARGET = rustTarget;
-          "CARGO_TARGET_${rustTargetEnv}_LINKER" = "${stdenv.cc.targetPrefix}cc";
-        } // (lib.optionalAttrs (stdenv.buildPlatform != stdenv.hostPlatform) {
-          depsBuildBuild = [ qemu ];
-          "CARGO_TARGET_${rustTargetEnv}_RUNNER" = "qemu-${stdenv.hostPlatform.qemuArch}";
-        }) // (args.extraAttrs or { }));
-
-        buildExpr = builder:
-          { stdenv
-          , lib
-          , pkg-config
-          , ffmpeg
-          , libiconv
-          , qemu
-          , darwin ? null
-          , extraAttrs ? { }
-          }@args:
-
-          builder ({
-            cargoArtifacts = craneLib.buildDepsOnly (commonExpr args);
-          } // (commonExpr args));
+        transcode-rs = craneLib.buildPackage (commonArgs // { inherit cargoArtifacts; });
       in
       {
         apps = {
@@ -174,44 +179,31 @@
 
         packages = {
           default = self.packages.${buildPlatform.system}.transcode-rs;
-          transcode-rs = pkgs.callPackage (buildExpr craneLib.buildPackage) { };
+          inherit transcode-rs;
         };
 
         inherit pkgs;
 
-        devShells.default = pkgs.callPackage
-          (
-            { mkShell
-            , callPackage
-            , nil
-            , nixpkgs-fmt
-            , statix
-            , rust-analyzer
-            , cargo-machete
-            }:
-            (callPackage (buildExpr mkShell) { }).overrideAttrs (env: {
-              cargoArtifacts = null;
-              depsBuildBuild = (env.depsBuildBuild or [ ]) ++ [
-                nil
-                nixpkgs-fmt
-                statix
-                rust-analyzer
-                rustToolchain
-                cargo-machete
-              ];
-              inherit (self.checks.${buildPlatform.system}.pre-commit) shellHook;
-            })
-          )
-          { };
+        devShells.default = craneLib.devShell (buildVars // {
+          checks = self.checks.${buildPlatform.system};
+          packages = with pkgs; [
+            nil
+            nixpkgs-fmt
+            statix
+            rust-analyzer
+            cargo-machete
+          ];
+        });
 
         checks = {
-          audit = pkgs.callPackage (buildExpr craneLib.cargoAudit) {
-            extraAttrs = { inherit advisory-db; };
-          };
-          clippy = pkgs.callPackage (buildExpr craneLib.cargoClippy) {
-            extraAttrs.cargoClippyExtraArgs = "--all-targets";
-          };
-          rustfmt = pkgs.callPackage (buildExpr craneLib.cargoFmt) { };
+          audit = craneLib.cargoAudit { inherit src advisory-db; };
+
+          clippy = craneLib.cargoClippy (commonArgs // {
+            inherit cargoArtifacts;
+            cargoClippyExtraArgs = "--all-targets";
+          });
+
+          rustfmt = craneLib.cargoFmt { inherit src; };
 
           pre-commit = pre-commit-hooks.lib.${buildPlatform.system}.run {
             src = ./.;
