@@ -791,9 +791,8 @@ async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> R
                 .len();
             if transcode_size > max_size {
                 warn!(
-                    path=%original.path().display(),
-                    original_size=ByteSize::b(original_size).to_string_as(true),
-                    max_size=ByteSize::b(max_size).to_string_as(true),
+                    original_size = ByteSize::b(original_size).to_string_as(true),
+                    max_size = ByteSize::b(max_size).to_string_as(true),
                     crf,
                     "transcode failed compression goal, increasing crf"
                 );
@@ -812,9 +811,8 @@ async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> R
             .len();
         if transcode_size > max_size {
             warn!(
-                path=%original.path().display(),
-                original_size=ByteSize::b(original_size).to_string_as(true),
-                max_size=ByteSize::b(max_size).to_string_as(true),
+                original_size = ByteSize::b(original_size).to_string_as(true),
+                max_size = ByteSize::b(max_size).to_string_as(true),
                 crf,
                 "transcode failed compression goal, increasing crf"
             );
@@ -822,7 +820,7 @@ async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> R
             continue 'next_crf;
         }
 
-        info!(path=%original.path().display(), crf, "transcoded successfully");
+        info!(crf, "done");
         return Ok(dest);
     }
 
