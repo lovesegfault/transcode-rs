@@ -1083,13 +1083,11 @@ impl<P: AsPath + Send> VideoFile<P> {
             (current, desired) if current == desired => transcoder.codec_video("copy"),
             (_, VideoCodec::AV1) => transcoder.codec_video("libsvtav1").args([
                 "-preset",
-                "5",
+                "6",
                 "-crf",
                 &format!("{crf}"),
-                "-sc_detection",
-                "true",
                 "-svtav1-params",
-                "tune=0:film-grain=8",
+                "tune=0:film-grain=8:enable-overlays=1:scd=1",
             ]),
             _ => unimplemented!(),
         };
