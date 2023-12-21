@@ -1088,8 +1088,6 @@ impl<P: AsPath + Send> VideoFile<P> {
                 &format!("{crf}"),
                 "-sc_detection",
                 "true",
-                "-la_depth",
-                "120",
                 "-svtav1-params",
                 "tune=0:film-grain=8",
             ]),
