@@ -192,6 +192,7 @@
             statix
             rust-analyzer
             cargo-machete
+            cargo-edit
           ];
         });
 
