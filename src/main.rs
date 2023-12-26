@@ -433,7 +433,7 @@ impl Config {
     }
 }
 
-#[tracing::instrument(name = "find_videos", skip_all)]
+#[tracing::instrument(name = "find_videos", skip_all, fields(path=%state.config.video_dir.display()), parent=state.pb_span.clone())]
 fn find_video_files(
     video_files_out: async_priority_channel::Sender<PathBuf, u64>,
     nonvideo_out: UnboundedSender<PathBuf>,
