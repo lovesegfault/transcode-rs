@@ -10,7 +10,7 @@ async-priority-channel = "0.1.0"
 async-tempfile = "0.5.0"
 bytesize = "1.3.0"
 clap = { version = "4.4.2", features = ["derive", "env"] }
-derivative = "2.2.0"
+educe = "0.5.9"
 ffmpeg-sidecar = "0.5.1"
 ffprobe = { git = "https://github.com/theduke/ffprobe-rs.git" }
 futures = "0.3.28"

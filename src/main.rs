@@ -9,7 +9,6 @@ use anyhow::{Context, Result};
 use async_tempfile::TempFile;
 use bytesize::ByteSize;
 use clap::Parser;
-use derivative::Derivative;
 use ffmpeg_sidecar::{
     child::FfmpegChild,
     command::FfmpegCommand,
@@ -990,13 +989,10 @@ enum AudioCodec {
     Other,
 }
 
-#[derive(Derivative)]
-#[derivative(Debug, Hash, PartialEq, Eq)]
+#[derive(educe::Educe)]
+#[educe(Debug, Hash, PartialEq, Eq)]
 struct VideoFile<P: AsPath> {
-    #[derivative(
-        Hash(hash_with = "hash_as_path"),
-        PartialEq(compare_with = "eq_as_path")
-    )]
+    #[educe(Hash(method(hash_as_path)), PartialEq(method(eq_as_path)))]
     path: P,
     video_codec: VideoCodec,
     audio_codec: Option<AudioCodec>,
