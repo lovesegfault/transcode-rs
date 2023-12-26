@@ -224,7 +224,7 @@ async fn main() -> Result<()> {
         .with(indicatif_layer)
         .init();
 
-    let pb_span = info_span!("transcode_rs");
+    let pb_span = info_span!("tasks");
     pb_span.pb_set_style(&ProgressStyle::default_bar());
     pb_span.pb_set_length(1);
     pb_span.pb_start();
