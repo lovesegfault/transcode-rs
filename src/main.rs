@@ -668,11 +668,15 @@ fn transcode_progress(
     ffmpeg
         .iter()
         .map_err(|e| anyhow::anyhow!(e.to_string()))?
-        .for_each(|event| match event {
+        .map(|event| match event {
             FfmpegEvent::Log(LogLevel::Error | LogLevel::Fatal, msg) => {
-                error!("ffmpeg error: {msg}")
+                error!("ffmpeg error: {msg}");
+                anyhow::bail!("{msg}");
             }
-            FfmpegEvent::Log(LogLevel::Warning, msg) => warn!("ffmpeg warn: {msg}"),
+            FfmpegEvent::Log(LogLevel::Warning, msg) => {
+                warn!("ffmpeg warn: {msg}");
+                Ok(())
+            }
             FfmpegEvent::Progress(p) => {
                 let frame = p.frame;
                 let fps = p.fps;
@@ -725,9 +729,13 @@ fn transcode_progress(
                             },
                         ),
                 );
+
+                Ok(())
             }
-            _ => {}
-        });
+            _ => Ok(()),
+        })
+        .collect::<Result<(), anyhow::Error>>()
+        .context("ffmpeg error")?;
 
     ffmpeg.wait().context("wait on ffmpeg child")?;
 
@@ -881,6 +889,7 @@ async fn finalize_transcode(
             transcode.video_codec
         );
     }
+
     let shrunk_amount = original.size - transcode.size;
     let shrunk_percent = ((transcode.size as f64) / (original.size as f64)) * 100.0;
 
