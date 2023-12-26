@@ -6,7 +6,6 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use async_atomic::Atomic;
 use async_tempfile::TempFile;
 use bytesize::ByteSize;
 use clap::Parser;
@@ -26,7 +25,10 @@ use thread_priority::{
 use tikv_jemallocator::Jemalloc;
 use tokio::{
     io::AsyncWriteExt,
-    sync::mpsc::{unbounded_channel, UnboundedSender},
+    sync::{
+        mpsc::{unbounded_channel, UnboundedSender},
+        watch,
+    },
     task::{spawn_blocking, JoinSet},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -239,9 +241,8 @@ async fn main() -> Result<()> {
     let (analyze_broken_video_files_in, analyze_broken_video_files_out) = unbounded_channel();
     let (transcode_video_files_in, transcode_video_files_out) = unbounded_channel();
     let (transcode_failed_files_in, transcode_failed_files_out) = unbounded_channel();
-    let ingestion_done_signal = Arc::new(Atomic::new(false));
+    let (ingestion_done_in, mut ingestion_done_out) = watch::channel(false);
 
-    let _signal_move = ingestion_done_signal.clone();
     let _state_move = state.clone();
     tasks.spawn_blocking(move || {
         find_video_files(
@@ -249,7 +250,7 @@ async fn main() -> Result<()> {
             find_nonvideo_files_in,
             find_symlinks_in,
             find_dirs_in,
-            _signal_move,
+            ingestion_done_in,
             _state_move,
         );
         anyhow::Ok(())
@@ -338,10 +339,7 @@ async fn main() -> Result<()> {
     tasks.spawn(async move {
         let mut stream = async_receiver_stream(analyze_video_files_out);
 
-        ingestion_done_signal
-            .subscribe_arc()
-            .wait(|ingestion_done| ingestion_done)
-            .await;
+        ingestion_done_out.wait_for(|done| *done).await.ok();
 
         while let Some((original, _prio)) = stream.next().await {
             match transcode_video_file(&original, &_state).await {
@@ -441,7 +439,7 @@ fn find_video_files(
     nonvideo_out: UnboundedSender<PathBuf>,
     symlink_out: UnboundedSender<PathBuf>,
     dir_out: UnboundedSender<PathBuf>,
-    ingestion_done_signal: Arc<Atomic<bool>>,
+    ingestion_done: watch::Sender<bool>,
     state: State,
 ) {
     let video_exts = [
@@ -498,7 +496,7 @@ fn find_video_files(
             state.pb_span.pb_inc_length(1);
         }
     }
-    ingestion_done_signal.store(true);
+    ingestion_done.send(true).ok();
 }
 
 #[tracing::instrument(skip_all, fields(path=%path.display()), parent=state.pb_span.clone())]

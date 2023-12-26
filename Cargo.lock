@@ -101,16 +101,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
 
 [[package]]
-name = "async-atomic"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66f2b172111ac0a2743b0c5a2d9caeb537a7ef297a337c0d8c2e80988cd9e7cb"
-dependencies = [
- "atomic",
- "futures",
-]
-
-[[package]]
 name = "async-priority-channel"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -127,12 +117,6 @@ checksum = "c17d4a3286e6518d84be399efb8901aa74a183753b0bf4a8a4afe5bcfedcbb08"
 dependencies = [
  "tokio",
 ]
-
-[[package]]
-name = "atomic"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c59bdb34bc650a32731b31bd8f0829cc15d24a708ee31559e0bb34f2bc320cba"
 
 [[package]]
 name = "autocfg"
@@ -1501,7 +1485,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aquamarine",
- "async-atomic",
  "async-priority-channel",
  "async-tempfile",
  "bytesize",
