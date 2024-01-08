@@ -1,7 +1,7 @@
 use std::{
     ops::Deref,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{atomic::AtomicU64, Arc},
     time::Duration,
 };
 
@@ -223,12 +223,7 @@ async fn main() -> Result<()> {
         .with(indicatif_layer)
         .init();
 
-    let pb_span = info_span!("tasks");
-    pb_span.pb_set_style(&ProgressStyle::default_bar());
-    pb_span.pb_set_length(1);
-    pb_span.pb_start();
-
-    let state = State::new(config, pb_span);
+    let state = State::new(config);
 
     let mut tasks = JoinSet::new();
 
@@ -394,6 +389,7 @@ struct State(Arc<StateInner>);
 struct StateInner {
     config: Config,
     pb_span: Span,
+    total_saved: Arc<AtomicU64>,
 }
 
 impl Deref for State {
@@ -404,8 +400,44 @@ impl Deref for State {
 }
 
 impl State {
-    fn new(config: Config, pb_span: Span) -> Self {
-        Self(Arc::new(StateInner { config, pb_span }))
+    fn new(config: Config) -> Self {
+        let total_saved = Arc::new(AtomicU64::new(0));
+
+        let pb_span = info_span!("tasks");
+        let _total_saved_move = total_saved.clone();
+        pb_span.pb_set_style(
+            &ProgressStyle::with_template(
+                "{wide_bar}\nstats progress={pos}/{len} saved={total_saved} {wide_msg} {elapsed}",
+            )
+            .unwrap()
+            .with_key(
+                "elapsed",
+                |state: &ProgressState, writer: &mut dyn std::fmt::Write| {
+                    let elapsed = Duration::from_secs(state.elapsed().as_secs());
+                    write!(writer, "{}", humantime::format_duration(elapsed)).ok();
+                },
+            )
+            .with_key(
+                "total_saved",
+                move |_: &ProgressState, writer: &mut dyn std::fmt::Write| {
+                    write!(
+                        writer,
+                        "{}",
+                        ByteSize::b(_total_saved_move.load(std::sync::atomic::Ordering::Relaxed))
+                            .to_string_as(true)
+                    )
+                    .ok();
+                },
+            ),
+        );
+        pb_span.pb_set_length(1);
+        pb_span.pb_start();
+
+        Self(Arc::new(StateInner {
+            config,
+            pb_span,
+            total_saved,
+        }))
     }
 }
 
@@ -895,6 +927,11 @@ async fn finalize_transcode(
         shrunk = format!("{shrunk_percent:.2}%"),
         "successfully transcoded"
     );
+
+    state
+        .total_saved
+        .fetch_add(shrunk_amount, std::sync::atomic::Ordering::Relaxed);
+
     let dry_run = state.config.dry_run;
     match state.config.transcoded_video_action {
         FileAction::Skip => {
