@@ -182,8 +182,6 @@
           inherit transcode-rs;
         };
 
-        inherit pkgs;
-
         devShells.default = craneLib.devShell (buildVars // {
           checks = self.checks.${buildPlatform.system};
           packages = with pkgs; [
