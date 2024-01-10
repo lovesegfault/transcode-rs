@@ -782,7 +782,7 @@ fn transcode_progress(
     parent=state.pb_span.clone()
 )]
 async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> Result<TempFile> {
-    info!("transcoding '{}'", original.path().display());
+    info!("transcoding started");
     let original_size = original.size;
     let max_size = if original.size <= bytesize::mib(100u64) {
         original_size
