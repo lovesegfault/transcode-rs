@@ -231,7 +231,7 @@ async fn main() -> Result<()> {
     let (find_dirs_in, find_dirs_out) = unbounded_channel();
     let (find_symlinks_in, find_symlinks_out) = unbounded_channel();
     let (find_nonvideo_files_in, find_nonvideo_files_out) = unbounded_channel();
-    let (analyze_video_files_in, analyze_video_files_out) = async_priority_channel::unbounded();
+    let (analyze_video_files_in, analyze_video_files_out) = async_priority_channel::bounded(100);
     let (analyze_broken_video_files_in, analyze_broken_video_files_out) = unbounded_channel();
     let (transcode_video_files_in, transcode_video_files_out) = unbounded_channel();
     let (transcode_failed_files_in, transcode_failed_files_out) = unbounded_channel();
