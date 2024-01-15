@@ -263,8 +263,7 @@ async fn main() -> Result<()> {
                     _state.clone(),
                 )
             })
-            .par_for_each(
-                2,
+            .for_each(
                 |(path, prio, transcode_out, broken_out, state)| async move {
                     if let Err(e) =
                         analyze_video_file(&path, prio, transcode_out, broken_out, state).await
