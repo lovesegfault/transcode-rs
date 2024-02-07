@@ -475,6 +475,8 @@ fn find_video_files(
     let video_exts = [
         "avi", "f4v", "flv", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "vob", "webm", "wmv",
     ];
+    // TODO: Support ISO videos
+    let ignored_exts = ["iso"];
 
     let root = &state.config.video_dir;
     info!(path=%root.display(), "Scanning dir");
@@ -504,6 +506,10 @@ fn find_video_files(
             }
             continue;
         };
+        if ignored_exts.iter().any(|&e| e == ext.to_ascii_lowercase()) {
+            debug!(path=%path.display(), "ignoring unsupported file format");
+            continue;
+        }
         if !video_exts.iter().any(|&e| e == ext.to_ascii_lowercase()) {
             if let Err(e) = nonvideo_out.send(path.to_path_buf()) {
                 error!(path=%path.display(), "failed to submit non-video file: {e:?}");
