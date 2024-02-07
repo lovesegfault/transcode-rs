@@ -473,7 +473,7 @@ fn find_video_files(
     state: State,
 ) {
     let video_exts = [
-        "avi", "flv", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "vob", "webm", "wmv",
+        "avi", "f4v", "flv", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "vob", "webm", "wmv",
     ];
 
     let root = &state.config.video_dir;
