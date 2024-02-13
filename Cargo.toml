@@ -19,7 +19,7 @@ humantime = "2.1.0"
 indicatif = { version = "0.17.7", features = ["tokio"] }
 par-stream = { version = "0.10.2", features = ["runtime-tokio"] }
 shellexpand = { version = "3.1.0", features = ["path"] }
-strum = { version = "0.25.0", features = ["phf", "strum_macros", "derive"] }
+strum = { version = "0.26.0", features = ["phf", "strum_macros", "derive"] }
 thread-priority = "0.15.1"
 tikv-jemallocator = "0.5.4"
 tokio = { version = "1.35.1", features = ["full"] }

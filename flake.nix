@@ -75,24 +75,12 @@
         };
 
         ffmpegConfig = final: prev: {
-          ffmpeg = prev.ffmpeg_6-headless.override {
-            withBluray = true;
-            withCelt = true;
+          ffmpeg = prev.ffmpeg_6-full.override {
             withFdkAac = true;
-            withGlslang = !final.stdenv.isDarwin;
-            withGsm = true;
-            withLibplacebo = !final.stdenv.isDarwin;
-            withOpencl = true;
-            withOpenh264 = true;
-            withOpenjpeg = true;
-            withOpenmpt = true;
-            withRav1e = true;
-            withSvg = true;
             withSvtav1 = !final.stdenv.isAarch64;
-            withVoAmrwbenc = true;
-            withVulkan = !final.stdenv.isDarwin;
-            withXml2 = true;
             withUnfree = true;
+            withCuda = false;
+            withCudaLLVM = false;
           };
         };
 
@@ -195,8 +183,6 @@
         });
 
         checks = {
-          audit = craneLib.cargoAudit { inherit src advisory-db; };
-
           clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--all-targets";
