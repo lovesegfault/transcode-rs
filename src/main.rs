@@ -798,7 +798,7 @@ async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> R
     };
     Span::current().record("max_size", ByteSize::b(max_size).to_string_as(true));
 
-    'next_crf: for crf in state.config.min_crf..64 {
+    'next_crf: for crf in (state.config.min_crf..64).step_by(2) {
         let dest = match TempFile::new_in(&state.config.working_dir).await {
             Ok(tmp) => tmp,
             Err(e) => {
