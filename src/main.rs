@@ -702,7 +702,7 @@ fn transcode_progress(
     ffmpeg
         .iter()
         .map_err(|e| anyhow::anyhow!(e.to_string()))?
-        .map(|event| match event {
+        .try_for_each(|event| match event {
             FfmpegEvent::Log(LogLevel::Error | LogLevel::Fatal, msg) => {
                 error!("ffmpeg error: {msg}");
                 anyhow::bail!("{msg}");
@@ -768,7 +768,6 @@ fn transcode_progress(
             }
             _ => Ok(()),
         })
-        .collect::<Result<(), anyhow::Error>>()
         .context("ffmpeg error")?;
 
     ffmpeg.wait().context("wait on ffmpeg child")?;
