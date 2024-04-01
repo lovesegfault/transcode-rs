@@ -788,13 +788,12 @@ fn transcode_progress(
 async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> Result<TempFile> {
     info!("transcoding started");
     let original_size = original.size;
-    let max_size = if original.size <= bytesize::mib(100u64) {
-        original_size
-    } else if original.video_codec == VideoCodec::Hevc {
-        original_size
-    } else {
-        ((1.0 - state.config.compression_goal) * (original_size as f64)).round() as u64
-    };
+    let max_size =
+        if original.size <= bytesize::mib(100u64) || original.video_codec == VideoCodec::Hevc {
+            original_size
+        } else {
+            ((1.0 - state.config.compression_goal) * (original_size as f64)).round() as u64
+        };
     Span::current().record("max_size", ByteSize::b(max_size).to_string_as(true));
 
     'next_crf: for crf in (state.config.min_crf..64).step_by(2) {
