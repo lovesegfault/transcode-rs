@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.81"
+anyhow = "1.0.82"
 aquamarine = "0.5"
 async-priority-channel = "0.2.0"
 async-tempfile = "0.5.0"
 bytesize = "1.3.0"
 clap = { version = "4.5.4", features = ["derive", "env"] }
 educe = "0.5.11"
-ffmpeg-sidecar = "1.0.1"
+ffmpeg-sidecar = { git = "https://github.com/nathanbabcock/ffmpeg-sidecar" }
 ffprobe = "0.4.0"
 futures = "0.3.30"
 human-panic = "1.2.3"

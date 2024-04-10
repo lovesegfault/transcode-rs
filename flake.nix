@@ -12,7 +12,7 @@
       url = "github:edolstra/flake-compat";
       flake = false;
     };
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable-small";
     pre-commit-hooks = {
       url = "github:cachix/pre-commit-hooks.nix";
       inputs = {
@@ -75,7 +75,11 @@
         };
 
         ffmpegConfig = final: prev: {
-          ffmpeg = prev.ffmpeg_6-full.override {
+          ffmpeg = prev.ffmpeg_7-full.override {
+            # These cause infinite recursions
+            withSdl2 = false;
+            withQuirc = false;
+
             withFdkAac = true;
             withSvtav1 = !final.stdenv.isAarch64;
             withUnfree = true;
@@ -89,12 +93,11 @@
         overlays = [
           rust.overlays.default
           ffmpegConfig
-        ];
+        ] ++ (lib.optional (localSystem == "x86_64-linux") x86-64-v3Opt)
+        ;
 
         pkgs = import nixpkgs {
-          inherit localSystem config;
-          overlays = overlays
-            ++ (lib.optional (localSystem == "x86_64-linux") x86-64-v3Opt);
+          inherit localSystem config overlays;
         };
 
         inherit (pkgs.stdenv) buildPlatform hostPlatform;
