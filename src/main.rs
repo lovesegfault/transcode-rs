@@ -17,10 +17,6 @@ use ffmpeg_sidecar::{
 use futures::{Stream, StreamExt};
 use indicatif::{ProgressState, ProgressStyle};
 use par_stream::ParStreamExt;
-use thread_priority::{
-    set_thread_priority_and_policy, NormalThreadSchedulePolicy, ThreadId, ThreadPriority,
-    ThreadSchedulePolicy,
-};
 use tikv_jemallocator::Jemalloc;
 use tokio::{
     io::AsyncWriteExt,
@@ -1146,18 +1142,9 @@ impl<P: AsPath + Send> VideoFile<P> {
 
         transcoder.arg(dst);
 
-        let mut ffmpeg = transcoder
+        let ffmpeg = transcoder
             .spawn()
             .with_context(|| format!("spawn ffmpeg transcode of '{}'", self.path().display()))?;
-
-        let pid = ffmpeg.as_inner().id() as ThreadId;
-        let prio = ThreadPriority::Crossplatform(10u8.try_into().unwrap());
-        set_thread_priority_and_policy(
-            pid,
-            prio,
-            ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Other),
-        )
-        .ok();
 
         Ok(ffmpeg)
     }
