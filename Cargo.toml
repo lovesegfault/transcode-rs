@@ -33,6 +33,7 @@ walkdir = "2.5.0"
 codegen-units = 1
 lto = true
 opt-level = 3
+debug = true
 
 [profile.dev]
 opt-level = 1
