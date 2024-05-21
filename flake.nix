@@ -13,11 +13,10 @@
       flake = false;
     };
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable-small";
-    pre-commit-hooks = {
-      url = "github:cachix/pre-commit-hooks.nix";
+    git-hooks = {
+      url = "github:cachix/git-hooks.nix";
       inputs = {
         flake-compat.follows = "flake-compat";
-        flake-utils.follows = "utils";
         nixpkgs-stable.follows = "nixpkgs";
         nixpkgs.follows = "nixpkgs";
       };
@@ -193,7 +192,7 @@
 
           rustfmt = craneLib.cargoFmt { inherit src; };
 
-          pre-commit = pre-commit-hooks.lib.${buildPlatform.system}.run {
+          pre-commit = git-hooks.lib.${buildPlatform.system}.run {
             src = ./.;
             hooks = {
               actionlint.enable = true;
