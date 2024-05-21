@@ -175,12 +175,14 @@
         devShells.default = craneLib.devShell (buildVars // {
           checks = self.checks.${buildPlatform.system};
           packages = with pkgs; [
+            cargo-edit
+            cargo-machete
+            rust-analyzer
+
             nil
+            nix-tree
             nixpkgs-fmt
             statix
-            rust-analyzer
-            cargo-machete
-            cargo-edit
           ];
         });
 
