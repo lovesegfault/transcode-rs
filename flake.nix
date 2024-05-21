@@ -75,15 +75,21 @@
 
         ffmpegConfig = final: prev: {
           ffmpeg = prev.ffmpeg_7-full.override {
-            # These cause infinite recursions
-            withSdl2 = false;
-            withQuirc = false;
-
             withFdkAac = true;
             withSvtav1 = !final.stdenv.isAarch64;
             withUnfree = true;
+
+            # These cause infinite recursions, or depend on other ffmpeg
+            # versions
+            withSdl2 = false;
+            withQuirc = false;
+            withChromaprint = false;
+            withOpenal = false;
+
+            # These balloon the closure size
             withCuda = false;
             withCudaLLVM = false;
+            withSamba = false;
           };
         };
 
