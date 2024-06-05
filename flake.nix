@@ -93,16 +93,29 @@
           };
         };
 
-        config = { allowUnfree = true; };
+        svt-av1-latest = final: prev: {
+          svt-av1 = prev.svt-av1.overrideAttrs (_: rec {
+            version = "2.1.0";
+            src = final.fetchFromGitLab {
+              owner = "AOMediaCodec";
+              repo = "SVT-AV1";
+              rev = "v${version}";
+              hash = "sha256-yfKnkO8GPmMpTWTVYDliERouSFgQPe3CfJmVussxfHY=";
+            };
+          });
+        };
 
         overlays = [
           rust.overlays.default
+          svt-av1-latest
           ffmpegConfig
-        ] ++ (lib.optional (localSystem == "x86_64-linux") x86-64-v3Opt)
-        ;
+        ] ++ lib.optionals (localSystem == "x86_64-linux") [
+          x86-64-v3Opt
+        ];
 
         pkgs = import nixpkgs {
-          inherit localSystem config overlays;
+          inherit localSystem overlays;
+          config = { allowUnfree = true; };
         };
 
         inherit (pkgs.stdenv) buildPlatform hostPlatform;
