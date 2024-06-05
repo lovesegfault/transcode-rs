@@ -115,7 +115,7 @@
           targets = [ rustTarget ];
         };
 
-        craneLib = ((crane.mkLib pkgs).overrideToolchain rustToolchain).overrideScope' (_: _: {
+        craneLib = ((crane.mkLib pkgs).overrideToolchain rustToolchain).overrideScope (_: _: {
           inherit (pkgs.pkgsLLVM) stdenv;
         });
 
