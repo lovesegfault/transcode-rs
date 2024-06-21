@@ -23,10 +23,7 @@
     };
     rust = {
       url = "github:oxalica/rust-overlay";
-      inputs = {
-        flake-utils.follows = "utils";
-        nixpkgs.follows = "nixpkgs";
-      };
+      inputs.nixpkgs.follows = "nixpkgs";
     };
     utils.url = "github:numtide/flake-utils";
   };
