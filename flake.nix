@@ -12,7 +12,7 @@
       url = "github:edolstra/flake-compat";
       flake = false;
     };
-    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable-small";
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
     git-hooks = {
       url = "github:cachix/git-hooks.nix";
       inputs = {
@@ -26,88 +26,23 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     utils.url = "github:numtide/flake-utils";
+    ffmpeg-opt = {
+      url = "github:lovesegfault/nix-ffmpeg-opt";
+      inputs = {
+        flake-compat.follows = "flake-compat";
+        nixpkgs.follows = "nixpkgs";
+        git-hooks.follows = "git-hooks";
+        utils.follows = "utils";
+      };
+    };
   };
 
   outputs = inputs: with inputs;
     utils.lib.eachDefaultSystem (localSystem:
       let
         inherit (nixpkgs) lib;
-
-        optimizedOverlayForHost = { hostCFlags ? [ ], hostRustflags ? [ ], hostGoFlags ? { } }:
-          final: prev:
-            let
-              inherit (prev.lib) concatStringsSep optionalAttrs pipe;
-
-              appendFlags = new: old:
-                with builtins;
-                if isString old then concatStringsSep " " ([ old ] ++ new)
-                else if isList old then concatStringsSep " " (old ++ new)
-                else (concatStringsSep " " new);
-
-              applyFlags = { cflags ? [ ], rustflags ? [ ], goflags ? { } }: pkg:
-                pkg.overrideAttrs (old:
-                  (optionalAttrs (cflags != [ ]) {
-                    NIX_CFLAGS_COMPILE = appendFlags cflags (old.NIX_CFLAGS_COMPILE or null);
-                    NIX_CFLAGS_LINK = appendFlags cflags (old.NIX_CFLAGS_LINK or null);
-                  })
-                  // (optionalAttrs (rustflags != [ ]) {
-                    CARGO_BUILD_RUSTFLAGS = appendFlags rustflags (old.CARGO_BUILD_RUSTFLAGS or null);
-                  })
-                  // goflags
-                );
-
-              applyHost = applyFlags { cflags = hostCFlags; goflags = hostGoFlags; rustflags = hostRustflags; };
-              applyGraphite = applyFlags { cflags = [ "-fgraphite-identity" "-floop-nest-optimize" ]; };
-            in
-            {
-              ffmpeg = pipe (prev.ffmpeg.override { withFrei0r = false; }) [ applyHost applyGraphite ];
-              svt-av1 = pipe prev.svt-av1 [ applyHost applyGraphite ];
-            };
-
-        x86-64-v3Opt = optimizedOverlayForHost {
-          hostCFlags = [ "-march=x86-64-v3" ];
-          hostGoFlags.GOAMD64 = "v3";
-          hostRustflags = [ "-Ctarget-cpu=x86-64-v3" ];
-        };
-
-        ffmpegConfig = final: prev: {
-          ffmpeg = prev.ffmpeg_7-full.override {
-            withFdkAac = true;
-            withSvtav1 = !final.stdenv.isAarch64;
-            withUnfree = true;
-
-            # These cause infinite recursions, or depend on other ffmpeg
-            # versions
-            withSdl2 = false;
-            withQuirc = false;
-            withChromaprint = false;
-            withOpenal = false;
-
-            # These balloon the closure size
-            withCuda = false;
-            withCudaLLVM = false;
-            withSamba = false;
-          };
-        };
-
-        svt-av1-latest = final: prev: {
-          svt-av1 = prev.svt-av1.overrideAttrs (_: rec {
-            version = "2.1.0";
-            src = final.fetchFromGitLab {
-              owner = "AOMediaCodec";
-              repo = "SVT-AV1";
-              rev = "v${version}";
-              hash = "sha256-yfKnkO8GPmMpTWTVYDliERouSFgQPe3CfJmVussxfHY=";
-            };
-          });
-        };
-
         overlays = [
           rust.overlays.default
-          svt-av1-latest
-          ffmpegConfig
-        ] ++ lib.optionals (localSystem == "x86_64-linux") [
-          x86-64-v3Opt
         ];
 
         pkgs = import nixpkgs {
@@ -131,9 +66,11 @@
 
         src = craneLib.cleanCargoSource (craneLib.path ./.);
 
+        inherit (inputs.ffmpeg-opt.packages.${localSystem}) ffmpeg-optimized;
+
         buildVars = rec {
-          FFMPEG_PATH = "${pkgs.ffmpeg.bin}/bin/ffmpeg";
-          FFPROBE_PATH = "${pkgs.ffmpeg.bin}/bin/ffprobe";
+          FFMPEG_PATH = "${ffmpeg-optimized.bin}/bin/ffmpeg";
+          FFPROBE_PATH = "${ffmpeg-optimized.bin}/bin/ffprobe";
 
           CFLAGS = "-flto -fuse-ld=lld"
             + lib.optionalString pkgs.stdenv.hostPlatform.isx86_64 " -march=x86-64-v3";
@@ -168,7 +105,7 @@
             darwin.apple_sdk.frameworks.Security
           ];
 
-          propagatedBuildInputs = with pkgs; [ ffmpeg.bin ];
+          propagatedBuildInputs = [ ffmpeg-optimized.bin ];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
