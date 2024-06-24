@@ -26,31 +26,26 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     utils.url = "github:numtide/flake-utils";
-    ffmpeg-opt = {
-      url = "github:lovesegfault/nix-ffmpeg-opt";
-      inputs = {
-        flake-compat.follows = "flake-compat";
-        nixpkgs.follows = "nixpkgs";
-        git-hooks.follows = "git-hooks";
-        utils.follows = "utils";
-      };
-    };
   };
 
   outputs = inputs: with inputs;
     utils.lib.eachDefaultSystem (localSystem:
       let
         inherit (nixpkgs) lib;
-        overlays = [
-          rust.overlays.default
-        ];
 
         pkgs = import nixpkgs {
-          inherit localSystem overlays;
+          inherit localSystem;
           config = { allowUnfree = true; };
+          overlays = [
+            rust.overlays.default
+            (import ./nix/overlays/svt-av1-latest.nix)
+            (import ./nix/overlays/optimized.nix)
+          ];
         };
 
         inherit (pkgs.stdenv) buildPlatform hostPlatform;
+
+        ffmpeg = pkgs.ffmpeg_7-full;
 
         rustTarget = pkgs.rust.toRustTargetSpec hostPlatform;
         rustTargetEnv = lib.replaceStrings [ "-" ] [ "_" ] (lib.toUpper rustTarget);
@@ -66,11 +61,9 @@
 
         src = craneLib.cleanCargoSource (craneLib.path ./.);
 
-        inherit (inputs.ffmpeg-opt.packages.${localSystem}) ffmpeg-optimized;
-
         buildVars = rec {
-          FFMPEG_PATH = "${ffmpeg-optimized.bin}/bin/ffmpeg";
-          FFPROBE_PATH = "${ffmpeg-optimized.bin}/bin/ffprobe";
+          FFMPEG_PATH = "${ffmpeg.bin}/bin/ffmpeg";
+          FFPROBE_PATH = "${ffmpeg.bin}/bin/ffprobe";
 
           CFLAGS = "-flto -fuse-ld=lld"
             + lib.optionalString pkgs.stdenv.hostPlatform.isx86_64 " -march=x86-64-v3";
@@ -105,7 +98,7 @@
             darwin.apple_sdk.frameworks.Security
           ];
 
-          propagatedBuildInputs = [ ffmpeg-optimized.bin ];
+          propagatedBuildInputs = [ ffmpeg.bin ];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;

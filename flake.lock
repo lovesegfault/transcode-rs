@@ -36,35 +36,6 @@
         "type": "github"
       }
     },
-    "ffmpeg-opt": {
-      "inputs": {
-        "flake-compat": [
-          "flake-compat"
-        ],
-        "git-hooks": [
-          "git-hooks"
-        ],
-        "nixpkgs": [
-          "nixpkgs"
-        ],
-        "utils": [
-          "utils"
-        ]
-      },
-      "locked": {
-        "lastModified": 1719089115,
-        "narHash": "sha256-ydtfkEPhl4DwrPr/wm1DUj761idOG8+Wx0VXwfXiZds=",
-        "owner": "lovesegfault",
-        "repo": "nix-ffmpeg-opt",
-        "rev": "48c68315efb164079e9f386996e6e6eb83575814",
-        "type": "github"
-      },
-      "original": {
-        "owner": "lovesegfault",
-        "repo": "nix-ffmpeg-opt",
-        "type": "github"
-      }
-    },
     "flake-compat": {
       "flake": false,
       "locked": {
@@ -149,7 +120,6 @@
       "inputs": {
         "advisory-db": "advisory-db",
         "crane": "crane",
-        "ffmpeg-opt": "ffmpeg-opt",
         "flake-compat": "flake-compat",
         "git-hooks": "git-hooks",
         "nixpkgs": "nixpkgs",
