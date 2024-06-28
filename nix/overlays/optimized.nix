@@ -36,8 +36,25 @@ let
         else (lib.concatStringsSep " " new);
 
       optCFlags = hostCflags ++ (lib.optionals (pkg.stdenv.cc.isGNU or false) [
+        # These come from -O3
+        "-fgcse-after-reload"
+        "-floop-interchange"
+        "-floop-unroll-and-jam"
+        "-fpeel-loops"
+        "-fpredictive-commoning"
+        "-fsplit-loops"
+        "-fsplit-paths"
+        "-ftree-loop-distribution"
+        "-ftree-partial-pre"
+        "-funswitch-loops"
+        "-fvect-cost-model=dynamic"
+        "-fversion-loops-for-strides"
+        "-fipa-cp-clone"
+        # Graphite polyhedral optimizations
         "-fgraphite-identity"
         "-floop-nest-optimize"
+        # Interprocedural pointer analysis
+        "-fipa-pta"
       ]);
 
       appendOptimizedFlags = appendFlags optCFlags;
