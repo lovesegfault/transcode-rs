@@ -858,7 +858,6 @@ async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> R
             continue 'next_crf;
         }
 
-        info!(crf, "done");
         return Ok(dest);
     }
 
@@ -924,7 +923,9 @@ async fn finalize_transcode(
     let shrunk_percent = ((transcode.size as f64) / (original.size as f64)) * 100.0;
 
     info!(
-        saved = ByteSize::b(shrunk_amount).to_string_as(true),
+        original = original.size,
+        transcoded = transcode.size,
+        diff = format!("-{}", ByteSize::b(shrunk_amount).to_string_as(true)),
         shrunk = format!("{shrunk_percent:.2}%"),
         "successfully transcoded"
     );
