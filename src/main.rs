@@ -923,8 +923,8 @@ async fn finalize_transcode(
     let shrunk_percent = ((transcode.size as f64) / (original.size as f64)) * 100.0;
 
     info!(
-        original = original.size,
-        transcoded = transcode.size,
+        original = ByteSize::b(original.size).to_string_as(true),
+        transcoded = ByteSize::b(transcode.size).to_string_as(true),
         diff = format!("-{}", ByteSize::b(shrunk_amount).to_string_as(true)),
         shrunk = format!("{shrunk_percent:.2}%"),
         "successfully transcoded"
