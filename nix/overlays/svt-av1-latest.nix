@@ -1,11 +1,11 @@
 final: prev: {
   svt-av1 = prev.svt-av1.overrideAttrs (_: rec {
-    version = "2.1.1";
+    version = "2.1.2";
     src = final.fetchFromGitLab {
       owner = "AOMediaCodec";
       repo = "SVT-AV1";
       rev = "v${version}";
-      hash = "sha256-3rRIvSO4yIHzeRIQXGT460CMkIoHtlLJKSK/MhM3AHM=";
+      hash = "sha256-jrfnUcDTbrf3wWs0D57ueeLmndhpOQChM7gBB14MzcQ=";
     };
   });
 }
