@@ -39,6 +39,7 @@
           overlays = [
             rust.overlays.default
             (import ./nix/overlays/svt-av1-latest.nix)
+            (import ./nix/overlays/svt-av1-pgo.nix)
             (import ./nix/overlays/optimized.nix)
           ];
         };
