@@ -20,7 +20,7 @@ indicatif = { version = "0.17.8", features = ["tokio"] }
 par-stream = { version = "0.10.2", features = ["runtime-tokio"] }
 shellexpand = { version = "3.1.0", features = ["path"] }
 strum = { version = "0.26.2", features = ["phf", "strum_macros", "derive"] }
-tikv-jemallocator = "0.5.4"
+tikv-jemallocator = "0.6.0"
 tokio = { version = "1.38.0", features = ["full"] }
 tokio-stream = "0.1.15"
 tracing = "0.1.40"
