@@ -63,9 +63,15 @@ struct Config {
     /// The minimum constant rate factor (CRF) to use when transcoding.
     ///
     /// If we miss the <COMPRESSION_GOAL> with this CRF, it will be raised until the goal is
-    /// reached.
+    /// reached, or max_crf is reached.
     #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u8).range(0..64))]
     min_crf: u8,
+
+    /// The maximum constant rate factor (CRF) to use when transcoding.
+    ///
+    /// If we miss the <COMPRESSION_GOAL> with this CRF, it will be raised until this limit.
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..64))]
+    max_crf: Option<u8>,
 
     /// How to handle non-video files discovered in <VIDEO_DIR>.
     #[arg(long, value_enum, default_value_t=FileAction::Skip)]
@@ -792,7 +798,7 @@ async fn transcode_video_file(original: &VideoFile<PathBuf>, state: &State) -> R
         };
     Span::current().record("max_size", ByteSize::b(max_size).to_string_as(true));
 
-    'next_crf: for crf in (state.config.min_crf..64).step_by(2) {
+    'next_crf: for crf in (state.config.min_crf..state.config.max_crf.unwrap_or(64)).step_by(2) {
         let dest = match TempFile::new_in(state.config.working_dir.as_path()).await {
             Ok(tmp) => tmp,
             Err(e) => {
