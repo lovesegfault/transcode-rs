@@ -1,6 +1,6 @@
 final: prev: {
   svt-av1 = prev.svt-av1.overrideAttrs (_: rec {
-    version = "2.1.2";
+    version = "2.2.1";
     src = final.fetchFromGitLab {
       owner = "AOMediaCodec";
       repo = "SVT-AV1";
