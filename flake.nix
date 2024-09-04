@@ -114,6 +114,7 @@
         packages = {
           default = self.packages.${buildPlatform.system}.transcode-rs;
           inherit transcode-rs;
+          inherit (pkgs) svt-av1 ffmpeg;
         };
 
         devShells.default = craneLib.devShell (buildVars // {
