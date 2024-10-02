@@ -42,15 +42,15 @@
         };
 
         inherit (pkgs.stdenv) buildPlatform hostPlatform;
+        inherit (hostPlatform.rust) rustcTarget;
 
         ffmpeg = pkgs.ffmpeg_7-full;
 
-        rustTarget = pkgs.rust.toRustTargetSpec hostPlatform;
-        rustTargetEnv = lib.replaceStrings [ "-" ] [ "_" ] (lib.toUpper rustTarget);
+        rustcTargetEnv = lib.replaceStrings [ "-" ] [ "_" ] (lib.toUpper rustcTarget);
 
         rustToolchain = pkgs.pkgsBuildHost.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" ];
-          targets = [ rustTarget ];
+          targets = [ rustcTarget ];
         };
 
         craneLib = ((crane.mkLib pkgs).overrideToolchain rustToolchain).overrideScope (_: _: {
@@ -67,13 +67,13 @@
             + lib.optionalString pkgs.stdenv.hostPlatform.isx86_64 " -march=x86-64-v3";
           CXXFLAGS = CFLAGS;
 
-          CARGO_BUILD_TARGET = rustTarget;
-          "CARGO_TARGET_${rustTargetEnv}_LINKER" = "clang";
-          "CARGO_TARGET_${rustTargetEnv}_RUSTFLAGS" = "-Clink-arg=-fuse-ld=lld"
+          CARGO_BUILD_TARGET = rustcTarget;
+          "CARGO_TARGET_${rustcTargetEnv}_LINKER" = "clang";
+          "CARGO_TARGET_${rustcTargetEnv}_RUSTFLAGS" = "-Clink-arg=-fuse-ld=lld"
             + lib.optionalString pkgs.stdenv.hostPlatform.isx86_64 " -Ctarget-cpu=x86-64-v3";
 
         } // (lib.optionalAttrs (pkgs.stdenv.buildPlatform != pkgs.stdenv.hostPlatform) {
-          "CARGO_TARGET_${rustTargetEnv}_RUNNER" = "qemu-${pkgs.stdenv.hostPlatform.qemuArch}";
+          "CARGO_TARGET_${rustcTargetEnv}_RUNNER" = "qemu-${pkgs.stdenv.hostPlatform.qemuArch}";
         });
 
         commonArgs = buildVars // {
